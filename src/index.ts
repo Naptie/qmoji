@@ -73,12 +73,13 @@ const getEmoji = async (image: ImageRecord, showName = false) => {
 const getEmojiList = async (
   name: string,
   images: ImageRecord[],
-  showIndex = false
+  showIndex = false,
+  count?: number
 ): Promise<SendMessageSegment[]> => [
   {
     type: 'text',
     data: {
-      text: `「${name}」(${images.every((i) => i.user_id === 'global') ? '全局，' : ''}共 ${images.length} 个)\n`
+      text: `「${name}」(${images.every((i) => i.user_id === 'global') ? '全局，' : ''}共 ${count !== undefined ? count : images.length} 个)\n`
     }
   },
   ...(
@@ -272,7 +273,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
               content: (
                 await Promise.all(
                   Object.entries(groups).map(([id, images]) => {
-                    return getEmojiList(id.split('-')[0], [random(images)]);
+                    return getEmojiList(id.split('-')[0], [random(images)], false, images.length);
                   })
                 )
               ).flat()
