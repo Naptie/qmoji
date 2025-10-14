@@ -89,7 +89,9 @@ const getEmojiList = async (
           ? [
               {
                 type: 'text',
-                data: { text: `${i + 1}.\n` }
+                data: {
+                  text: `${i + 1}.${img.user_id === 'global' ? ' (全局)' : ''}\n`
+                }
               } satisfies TextSegment,
               imgSegment
             ]
@@ -256,10 +258,10 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           }
           const groups = images.reduce(
             (acc, img) => {
-              if (!acc[img.name]) {
-                acc[img.name] = [];
+              if (!acc[`${img.name}-${img.user_id}`]) {
+                acc[`${img.name}-${img.user_id}`] = [];
               }
-              acc[img.name].push(img);
+              acc[`${img.name}-${img.user_id}`].push(img);
               return acc;
             },
             {} as Record<string, typeof images>
@@ -269,9 +271,9 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             data: {
               content: (
                 await Promise.all(
-                  Object.entries(groups).map(([name, images]) =>
-                    getEmojiList(name, [random(images)])
-                  )
+                  Object.entries(groups).map(([id, images]) => {
+                    return getEmojiList(id.split('-')[0], [random(images)]);
+                  })
                 )
               ).flat()
             }
