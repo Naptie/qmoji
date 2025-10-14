@@ -146,6 +146,24 @@ napcat.on('message', async (context: AllHandlers['message']) => {
       if (config.prefixes.utils.includes(segments[0])) {
         const prefix = segments[0];
         const subcommand = segments[1] || '';
+        if (!subcommand) {
+          await sendMsg(context, {
+            type: 'text',
+            data: {
+              text:
+                `${prefix} list - 列出已保存的表情\n` +
+                `${prefix} clear <名称> - 清除指定名称的所有表情\n` +
+                `${prefix} remove <名称> <序号> - 删除指定名称的某个表情\n` +
+                (config.admins?.includes(context.user_id)
+                  ? `${prefix} allowlist [add|remove] [@用户] - 管理允许名单\n`
+                  : '') +
+                `${prefix} <名称> - 列出指定名称的所有表情\n` +
+                `保存表情：在回复的消息中使用 ${config.prefixes.save[0]}<名称> 进行保存\n` +
+                `使用表情：在消息中使用 ${config.prefixes.use[0]}<名称> 进行发送`
+            }
+          });
+          return;
+        }
         if (subcommand === 'allowlist' && config.admins?.includes(context.user_id)) {
           const operation = segments[2] || '';
           if (!operation) {
@@ -326,25 +344,23 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           }
           return;
         }
-        const name = segments[1];
-        if (name) {
-          const images = getImagesByNameAndUserId(name, context.user_id.toString());
-          await sendMsg(
-            context,
-            images.length > 0
-              ? {
-                  type: 'node',
-                  data: {
-                    content: await getEmojiList(name, images, true)
-                  }
+        const name = subcommand;
+        const images = getImagesByNameAndUserId(name, context.user_id.toString());
+        await sendMsg(
+          context,
+          images.length > 0
+            ? {
+                type: 'node',
+                data: {
+                  content: await getEmojiList(name, images, true)
                 }
-              : {
-                  type: 'text',
-                  data: { text: `没有找到名称为“${name}”的表情。` }
-                }
-          );
-          return;
-        }
+              }
+            : {
+                type: 'text',
+                data: { text: `没有找到名称为“${name}”的表情。` }
+              }
+        );
+        return;
       }
       if (config.prefixes.save.includes(segments[0][0])) {
         const name = segments[0].slice(1);
