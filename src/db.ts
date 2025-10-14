@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -8,6 +9,9 @@ const __dirname = path.dirname(__filename);
 
 // Initialize database
 const dbPath = path.join(__dirname, '..', 'data', 'qmoji.db');
+if (!fs.existsSync(path.dirname(dbPath))) {
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+}
 const db = new Database(dbPath);
 
 // Create images table
