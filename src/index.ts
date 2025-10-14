@@ -137,27 +137,28 @@ napcat.on('message', async (context: AllHandlers['message']) => {
     }
     const message = context.message.find((m) => m.type === 'text');
     if (message) {
-      const command = message.data.text;
-      const segments = command
+      const text = message.data.text;
+      const segments = text
         .split(/\s+/)
         .map((s) => s.trim().toLowerCase())
         .filter(Boolean);
       if (!segments.length) return;
-      if (config.prefixes.utils.includes(segments[0])) {
-        const prefix = segments[0];
+      const command = segments[0];
+      if ([...command].every((char) => char === command[0])) return;
+      if (config.prefixes.utils.includes(command)) {
         const subcommand = segments[1] || '';
         if (!subcommand) {
           await sendMsg(context, {
             type: 'text',
             data: {
               text:
-                `${prefix} list - 列出已保存的表情\n` +
-                `${prefix} clear <名称> - 清除指定名称的所有表情\n` +
-                `${prefix} remove <名称> <序号> - 删除指定名称的某个表情\n` +
+                `${command} list - 列出已保存的表情\n` +
+                `${command} clear <名称> - 清除指定名称的所有表情\n` +
+                `${command} remove <名称> <序号> - 删除指定名称的某个表情\n` +
                 (config.admins?.includes(context.user_id)
-                  ? `${prefix} allowlist [add|remove] [@用户] - 管理允许名单\n`
+                  ? `${command} allowlist [add|remove] [@用户] - 管理允许名单\n`
                   : '') +
-                `${prefix} <名称> - 列出指定名称的所有表情\n` +
+                `${command} <名称> - 列出指定名称的所有表情\n` +
                 `保存表情：在回复的消息中使用 ${config.prefixes.save[0]}<名称> 进行保存\n` +
                 `使用表情：在消息中使用 ${config.prefixes.use[0]}<名称> 进行发送`
             }
@@ -186,7 +187,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             await sendMsg(context, {
               type: 'text',
               data: {
-                text: `用法：${prefix} ${subcommand} [add|remove]`
+                text: `用法：${command} ${subcommand} [add|remove]`
               }
             });
             return;
@@ -196,7 +197,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             await sendMsg(context, {
               type: 'text',
               data: {
-                text: `请提及需要操作的用户。用法：${prefix} ${subcommand} ${operation} @用户`
+                text: `请提及需要操作的用户。用法：${command} ${subcommand} ${operation} @用户`
               }
             });
             return;
@@ -279,7 +280,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           if (!name) {
             await sendMsg(context, {
               type: 'text',
-              data: { text: `请指定要清除的表情名称。用法：${prefix} ${subcommand} <名称>` }
+              data: { text: `请指定要清除的表情名称。用法：${command} ${subcommand} <名称>` }
             });
             return;
           }
@@ -302,14 +303,14 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           if (!name) {
             await sendMsg(context, {
               type: 'text',
-              data: { text: `请指定要删除的表情名称。用法：${prefix} ${subcommand} <名称> <序号>` }
+              data: { text: `请指定要删除的表情名称。用法：${command} ${subcommand} <名称> <序号>` }
             });
             return;
           }
           if (isNaN(index) || index < 1) {
             await sendMsg(context, {
               type: 'text',
-              data: { text: `请指定要删除的表情序号。用法：${prefix} ${subcommand} <名称> <序号>` }
+              data: { text: `请指定要删除的表情序号。用法：${command} ${subcommand} <名称> <序号>` }
             });
             return;
           }
@@ -362,8 +363,8 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         );
         return;
       }
-      if (config.prefixes.save.includes(segments[0][0])) {
-        const name = segments[0].slice(1);
+      if (config.prefixes.save.includes(command[0])) {
+        const name = command.slice(1);
         const reply = context.message.find((m) => m.type === 'reply');
         if (!reply) return;
         const replyMsg = await napcat.get_msg({
@@ -394,8 +395,8 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           });
         }
       }
-      if (config.prefixes.use.includes(segments[0][0])) {
-        const name = segments[0].slice(1);
+      if (config.prefixes.use.includes(command[0])) {
+        const name = command.slice(1);
         const images = getImagesByNameAndUserId(name, context.user_id.toString());
         if (images.length === 0) {
           if (config.reactOnNotFound) {
