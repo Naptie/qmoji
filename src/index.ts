@@ -160,11 +160,9 @@ napcat.on('message', async (context: AllHandlers['message']) => {
                 `${command} list - 列出已保存的表情\n` +
                 `${command} clear <名称> - 清除指定名称的所有表情\n` +
                 `${command} remove <名称> <序号> - 删除指定名称的某个表情\n` +
-                (config.admins?.includes(context.user_id)
-                  ? `${command} allowlist [add|remove] [@用户] - 管理允许名单\n`
-                  : '') +
                 `${command} <名称> - 列出指定名称的所有表情\n` +
                 `保存表情：在回复的消息中使用 ${config.prefixes.save[0]}<名称> 进行保存\n` +
+                `保存全局表情：在回复的消息中使用 ${config.prefixes.globalSave[0]}<名称> 进行保存\n` +
                 `使用表情：在消息中使用 ${config.prefixes.use[0]}<名称> 进行发送`
             }
           });
