@@ -405,10 +405,17 @@ napcat.on('message', async (context: AllHandlers['message']) => {
 
           console.log(`[qmoji] User: ${userId}, Name: ${name}, Path: ${filePath}`);
 
-          await napcat.set_msg_emoji_like({
-            message_id: context.message_id,
-            emoji_id: '124'
-          });
+          if (context.message_type === 'group') {
+            await napcat.set_msg_emoji_like({
+              message_id: context.message_id,
+              emoji_id: '124'
+            });
+          } else {
+            await sendMsg(context, {
+              type: 'text',
+              data: { text: '保存成功！' }
+            });
+          }
         } catch (error) {
           console.error('[qmoji] Failed to save image:', error);
           await sendMsg(context, {
@@ -431,10 +438,17 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         const images = getImagesByNameAndUserId(name, context.user_id.toString(), true);
         if (images.length === 0) {
           if (config.reactOnNotFound) {
-            await napcat.set_msg_emoji_like({
-              message_id: context.message_id,
-              emoji_id: '10068'
-            });
+            if (context.message_type === 'group') {
+              await napcat.set_msg_emoji_like({
+                message_id: context.message_id,
+                emoji_id: '10068'
+              });
+            } else {
+              await sendMsg(context, {
+                type: 'text',
+                data: { text: `未找到名称为“${name}”的表情。` }
+              });
+            }
           }
           return;
         }
