@@ -4,7 +4,7 @@
 
 `config.json` 内容如下：
 
-```json
+```jsonc
 {
   "napcatWs": "ws://127.0.0.1:3001",
   "napcatToken": "token",
