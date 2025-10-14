@@ -65,13 +65,19 @@ export const getImageById = (id: string): ImageRecord | undefined => {
 };
 
 export const getImagesByUserId = (userId: string): ImageRecord[] => {
-  const stmt = db.prepare('SELECT * FROM images WHERE user_id = ? ORDER BY created_at DESC');
+  const stmt = db.prepare(
+    'SELECT * FROM images WHERE (user_id = ? or user_id = \'global\') ORDER BY user_id ASC, created_at DESC'
+  );
   return stmt.all(userId) as ImageRecord[];
 };
 
-export const getImagesByNameAndUserId = (name: string, userId: string): ImageRecord[] => {
+export const getImagesByNameAndUserId = (
+  name: string,
+  userId: string,
+  includeGlobal = false
+): ImageRecord[] => {
   const stmt = db.prepare(
-    'SELECT * FROM images WHERE name = ? AND user_id = ? ORDER BY created_at DESC'
+    `SELECT * FROM images WHERE name = ? AND (user_id = ? ${includeGlobal ? 'or user_id = \'global\'' : ''}) ORDER BY user_id ASC, created_at DESC`
   );
   return stmt.all(name, userId) as ImageRecord[];
 };

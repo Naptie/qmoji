@@ -75,7 +75,12 @@ const getEmojiList = async (
   images: ImageRecord[],
   showIndex = false
 ): Promise<SendMessageSegment[]> => [
-  { type: 'text', data: { text: `「${name}」(共 ${images.length} 个)\n` } },
+  {
+    type: 'text',
+    data: {
+      text: `「${name}」(${images.every((i) => i.user_id === 'global') ? '全局，' : ''}共 ${images.length} 个)\n`
+    }
+  },
   ...(
     await Promise.all(
       images.map(async (img, i) => {
@@ -102,7 +107,7 @@ const deleteEmoji = (context: AllHandlers['message'], image: ImageRecord) => {
 };
 
 const sendMsg = async (context: AllHandlers['message'], ...segments: SendMessageSegment[]) => {
-  if ('group_id' in context) {
+  if (context.message_type === 'group') {
     await napcat.send_msg({
       group_id: context.group_id,
       message: segments
@@ -275,7 +280,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           });
           return;
         }
-        if (subcommand === 'clear') {
+        const clear = async (userId: string) => {
           const name = segments[2];
           if (!name) {
             await sendMsg(context, {
@@ -284,8 +289,8 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             });
             return;
           }
-          const images = getImagesByNameAndUserId(name, context.user_id.toString());
-          const deletedCount = clearImagesByNameAndUserId(name, context.user_id.toString());
+          const images = getImagesByNameAndUserId(name, userId);
+          const deletedCount = clearImagesByNameAndUserId(name, userId);
           if (deletedCount > 0) {
             images.forEach((img) => {
               deleteEmoji(context, img);
@@ -295,6 +300,16 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             type: 'text',
             data: { text: `成功清除 ${deletedCount} 个表情。` }
           });
+        };
+        if (subcommand === 'clear') {
+          await clear(context.user_id.toString());
+          return;
+        }
+        if (
+          (subcommand === 'clearglobal' || subcommand === 'clearg') &&
+          config.admins?.includes(context.user_id)
+        ) {
+          await clear('global');
           return;
         }
         if (subcommand === 'remove' || subcommand === 'delete') {
@@ -314,7 +329,11 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             });
             return;
           }
-          const images = getImagesByNameAndUserId(name, context.user_id.toString());
+          const images = getImagesByNameAndUserId(
+            name,
+            context.user_id.toString(),
+            config.admins?.includes(context.user_id)
+          );
           if (images.length === 0) {
             await sendMsg(context, {
               type: 'text',
@@ -346,7 +365,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           return;
         }
         const name = subcommand;
-        const images = getImagesByNameAndUserId(name, context.user_id.toString());
+        const images = getImagesByNameAndUserId(name, context.user_id.toString(), true);
         await sendMsg(
           context,
           images.length > 0
@@ -363,8 +382,11 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         );
         return;
       }
-      if (config.prefixes.save.includes(command[0])) {
+      const save = async (userId: string) => {
         const name = command.slice(1);
+        if (!name) {
+          return;
+        }
         const reply = context.message.find((m) => m.type === 'reply');
         if (!reply) return;
         const replyMsg = await napcat.get_msg({
@@ -375,7 +397,6 @@ napcat.on('message', async (context: AllHandlers['message']) => {
 
         try {
           // Download and save the image
-          const userId = context.user_id.toString();
           const filePath = await downloadImage(image.url, userId, image.file);
 
           // Save to database
@@ -394,10 +415,19 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             data: { text: `保存失败：${error instanceof Error ? error.message : '未知错误'}` }
           });
         }
+      };
+      if (config.prefixes.globalSave.includes(command[0])) {
+        await save('global');
+      }
+      if (config.prefixes.save.includes(command[0])) {
+        await save(context.user_id.toString());
       }
       if (config.prefixes.use.includes(command[0])) {
         const name = command.slice(1);
-        const images = getImagesByNameAndUserId(name, context.user_id.toString());
+        if (!name) {
+          return;
+        }
+        const images = getImagesByNameAndUserId(name, context.user_id.toString(), true);
         if (images.length === 0) {
           if (config.reactOnNotFound) {
             await napcat.set_msg_emoji_like({
