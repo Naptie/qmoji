@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path, { resolve } from 'path';
 import { fileURLToPath } from 'url';
+import config from '../config.json' with { type: 'json' };
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -8,7 +9,7 @@ const __dirname = path.dirname(__filename);
 export const allowlistPath = resolve(__dirname, '../allowlist.json');
 
 if (!fs.existsSync(allowlistPath)) {
-  fs.writeFileSync(allowlistPath, JSON.stringify([]));
+  fs.writeFileSync(allowlistPath, JSON.stringify(config.admins));
 }
 
 export const allowlist = JSON.parse(fs.readFileSync(allowlistPath, 'utf-8')) as number[];
