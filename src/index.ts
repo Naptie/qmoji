@@ -9,8 +9,8 @@ import {
   clearImagesByNameAndUserId,
   deleteImageById
 } from './db.js';
-import { deleteImage, downloadImage, random } from './utils.js';
-import { readFile } from 'fs/promises';
+import { deleteImage, downloadImage, allowlist, allowlistPath, random } from './utils.js';
+import { readFile, writeFile } from 'fs/promises';
 import { resolve } from 'path';
 import config from '../config.json' with { type: 'json' };
 
@@ -41,6 +41,11 @@ const createSignallable = <T>() => {
       resolver(value);
     }
   } as { promise: Promise<T>; signal: (value: T) => void };
+};
+
+const getUserName = async (id: number) => {
+  const user = await napcat.get_stranger_info({ user_id: id });
+  return user?.nickname ? `${user.nickname} (${id})` : id.toString();
 };
 
 const getEmoji = async (image: ImageRecord, showName = false) => {
@@ -127,7 +132,7 @@ napcat.on('socket.close', () => {
 
 napcat.on('message', async (context: AllHandlers['message']) => {
   try {
-    if (config.allowlist && !config.allowlist.includes(context.user_id)) {
+    if (allowlist && !allowlist.includes(context.user_id)) {
       return;
     }
     const message = context.message.find((m) => m.type === 'text');
@@ -141,7 +146,83 @@ napcat.on('message', async (context: AllHandlers['message']) => {
       if (config.prefixes.utils.includes(segments[0])) {
         const prefix = segments[0];
         const subcommand = segments[1] || '';
-        console.log(command);
+        if (subcommand === 'allowlist' && config.admins?.includes(context.user_id)) {
+          const operation = segments[2] || '';
+          if (!operation) {
+            if (!allowlist || allowlist.length === 0) {
+              await sendMsg(context, {
+                type: 'text',
+                data: { text: '当前允许名单为空，任何人均可使用指令。' }
+              });
+              return;
+            }
+            await sendMsg(context, {
+              type: 'text',
+              data: {
+                text: `当前允许名单：\n${(await Promise.all(allowlist.map(async (id) => `- ${await getUserName(id)}`))).join('\n')}`
+              }
+            });
+            return;
+          }
+          if (operation !== 'add' && operation !== 'remove') {
+            await sendMsg(context, {
+              type: 'text',
+              data: {
+                text: `用法：${prefix} ${subcommand} [add|remove]`
+              }
+            });
+            return;
+          }
+          const mention = context.message.find((m) => m.type === 'at');
+          if (!mention) {
+            await sendMsg(context, {
+              type: 'text',
+              data: {
+                text: `请提及需要操作的用户。用法：${prefix} ${subcommand} ${operation} @用户`
+              }
+            });
+            return;
+          }
+          const targetId = parseInt(mention.data.qq);
+          const target = await getUserName(targetId);
+          if (isNaN(targetId)) {
+            await sendMsg(context, {
+              type: 'text',
+              data: { text: `无法识别提及的用户。` }
+            });
+            return;
+          }
+          if (operation === 'add') {
+            if (allowlist.includes(targetId)) {
+              await sendMsg(context, {
+                type: 'text',
+                data: { text: `用户 ${target} 已在允许名单中。` }
+              });
+              return;
+            }
+            allowlist.push(targetId);
+            await sendMsg(context, {
+              type: 'text',
+              data: { text: `已将用户 ${target} 添加到允许名单。` }
+            });
+          } else if (operation === 'remove') {
+            if (!allowlist || !allowlist.includes(targetId)) {
+              await sendMsg(context, {
+                type: 'text',
+                data: { text: `用户 ${target} 不在允许名单中。` }
+              });
+              return;
+            }
+            allowlist.splice(allowlist.indexOf(targetId), 1);
+            await sendMsg(context, {
+              type: 'text',
+              data: { text: `已将用户 ${target} 从允许名单中移除。` }
+            });
+          }
+          await writeFile(allowlistPath, JSON.stringify(allowlist), 'utf-8');
+          console.log(`[qmoji] Updated allowlist: ${allowlist}`);
+          return;
+        }
         if (subcommand === 'list') {
           const images = getImagesByUserId(context.user_id.toString());
           if (images.length === 0) {

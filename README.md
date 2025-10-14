@@ -8,7 +8,7 @@
 {
   "napcatWs": "ws://127.0.0.1:3001",
   "napcatToken": "token",
-  "allowlist": [123456789], // 留空时将允许任何人使用指令
+  "admins": [3237266617],
   "prefixes": {
     "save": ["#"], // 须为单字符
     "use": ["."], // 须为单字符

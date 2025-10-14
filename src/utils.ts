@@ -1,9 +1,17 @@
 import fs from 'fs';
-import path from 'path';
+import path, { resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+export const allowlistPath = resolve(__dirname, '../allowlist.json');
+
+if (!fs.existsSync(allowlistPath)) {
+  fs.writeFileSync(allowlistPath, JSON.stringify([]));
+}
+
+export const allowlist = JSON.parse(fs.readFileSync(allowlistPath, 'utf-8')) as number[];
 
 export const downloadImage = async (
   url: string,
