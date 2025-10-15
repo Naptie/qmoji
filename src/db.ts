@@ -122,7 +122,7 @@ export const getImagesByNameAndUser = (
 };
 
 export const getAllImages = (): ImageRecord[] => {
-  const stmt = db.prepare('SELECT * FROM images ORDER BY created_at DESC');
+  const stmt = db.prepare('SELECT * FROM images ORDER BY user_id ASC, created_at DESC');
   return stmt.all() as ImageRecord[];
 };
 

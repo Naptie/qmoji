@@ -9,7 +9,8 @@ import {
   clearImagesByNameAndUserId,
   deleteImageById,
   transferImagesOwnership,
-  incrementUseCount
+  incrementUseCount,
+  getAllImages
 } from './db.js';
 import { deleteImage, downloadImage, allowlist, allowlistPath, random } from './utils.js';
 import { readFile, writeFile } from 'fs/promises';
@@ -324,18 +325,21 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           console.log(`[qmoji] Updated user allowlist: ${allowlist}`);
           return;
         }
-        if (subcommand === 'list') {
+        if (subcommand === 'list' || (subcommand === 'listall' && isAdmin)) {
           const page = parseInt(segments[2]) || 1;
           const scope =
             segments[3] || (!segments[2] || parseInt(segments[2]) ? 'pcg' : segments[2]);
           const fetchPersonal = scope.includes('p') || scope.includes('私') || scope.includes('自');
           const fetchGroup = scope.includes('c') || scope.includes('群');
           const fetchGlobal = scope.includes('g') || scope.includes('公') || scope.includes('全');
-          const images = getImagesByUser(
-            fetchPersonal ? context.user_id.toString() : null,
-            isGroupChat && fetchGroup ? context.group_id.toString() : null,
-            fetchGlobal
-          );
+          const images =
+            subcommand === 'list'
+              ? getImagesByUser(
+                  fetchPersonal ? context.user_id.toString() : null,
+                  isGroupChat && fetchGroup ? context.group_id.toString() : null,
+                  fetchGlobal
+                )
+              : getAllImages();
           if (images.length === 0) {
             await send(context, {
               type: 'text',
