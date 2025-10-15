@@ -81,7 +81,7 @@ const getEmojiList = async (
   name: string,
   images: ImageRecord[],
   showIndex = false,
-  showSensitiveSaveInfo = true,
+  showSensitiveSaveInfo = false,
   groupId: number | null = null,
   count?: number
 ): Promise<SendMessageSegment[]> => {
@@ -125,7 +125,7 @@ const getEmojiList = async (
     {
       type: 'text',
       data: {
-        text: `「${name}」(${images.every((i) => i.user_id === 'global') ? '全局，' : images.every((i) => i.user_id.startsWith('chat-')) ? '群聊，' : ''}共 ${count !== undefined ? count : images.length} 个，使用 ${totalUses} 次)${saveInfo ? `\n${saveInfo}` : ''}\n`
+        text: `「${name}」(${images.every((i) => i.user_id === 'global') ? '全局, ' : images.every((i) => i.user_id.startsWith('chat-')) ? '群聊, ' : ''}共 ${count !== undefined ? count : images.length} 个, 使用 ${totalUses} 次)${saveInfo ? `\n${saveInfo}` : ''}\n`
       }
     },
     ...segments
