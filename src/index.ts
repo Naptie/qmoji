@@ -8,7 +8,8 @@ import {
   type ImageRecord,
   clearImagesByNameAndUserId,
   deleteImageById,
-  transferImagesOwnership
+  transferImagesOwnership,
+  incrementUseCount
 } from './db.js';
 import { deleteImage, downloadImage, allowlist, allowlistPath, random } from './utils.js';
 import { readFile, writeFile } from 'fs/promises';
@@ -80,24 +81,37 @@ const getEmojiList = async (
   name: string,
   images: ImageRecord[],
   showIndex = false,
+  showSensitiveSaveInfo = true,
+  groupId: number | null = null,
   count?: number
-): Promise<SendMessageSegment[]> => [
-  {
-    type: 'text',
-    data: {
-      text: `「${name}」(${images.every((i) => i.user_id === 'global') ? '全局，' : images.every((i) => i.user_id.startsWith('chat-')) ? '群聊，' : ''}共 ${count !== undefined ? count : images.length} 个)\n`
-    }
-  },
-  ...(
+): Promise<SendMessageSegment[]> => {
+  const totalUses = images.reduce((sum, img) => sum + img.use_count, 0);
+  let saveInfo = '';
+  const segments = (
     await Promise.all(
       images.map(async (img, i) => {
         const imgSegment = await getEmoji(img);
+        const ownershipLabel =
+          img.user_id === 'global' ? '(全局)' : img.user_id.startsWith('chat-') ? '(群聊)' : '';
+        const useCountInfo = ` (${img.use_count} 次)`;
+        const savedById = parseInt(img.saved_by);
+        const savedFromId = img.saved_from ? parseInt(img.saved_from) : null;
+        const savedByInfo =
+          (savedFromId === groupId || showSensitiveSaveInfo) && !isNaN(savedById)
+            ? ` - 由 ${await getUserName(savedById)} 保存`
+            : '';
+        const savedFromInfo =
+          savedFromId !== groupId && showSensitiveSaveInfo && savedFromId
+            ? `于群 ${await getGroupName(savedFromId)}`
+            : '';
+        if (i === 0) saveInfo = `${savedByInfo}${savedFromInfo}`;
+
         return showIndex
           ? [
               {
                 type: 'text',
                 data: {
-                  text: `${i + 1}.${img.user_id === 'global' ? ' (全局)' : img.user_id.startsWith('chat-') ? ' (群聊)' : ''}\n`
+                  text: `${i + 1}. ${ownershipLabel}${useCountInfo}${savedByInfo}${savedFromInfo}\n`
                 }
               } satisfies TextSegment,
               imgSegment
@@ -105,8 +119,18 @@ const getEmojiList = async (
           : [imgSegment];
       })
     )
-  ).flat()
-];
+  ).flat();
+
+  return [
+    {
+      type: 'text',
+      data: {
+        text: `「${name}」(${images.every((i) => i.user_id === 'global') ? '全局，' : images.every((i) => i.user_id.startsWith('chat-')) ? '群聊，' : ''}共 ${count !== undefined ? count : images.length} 个，使用 ${totalUses} 次)${saveInfo ? `\n${saveInfo}` : ''}\n`
+      }
+    },
+    ...segments
+  ];
+};
 
 const deleteEmoji = (context: AllHandlers['message'], image: ImageRecord) => {
   const userImages = getImagesByUser(context.user_id.toString());
@@ -162,6 +186,8 @@ napcat.on('message', async (context: AllHandlers['message']) => {
       if (!segments.length) return;
       const command = segments[0];
       if ([...command].every((char) => char === command[0])) return;
+      const isAdmin = config.admins?.includes(context.user_id);
+      const isGroupChat = context.message_type === 'group';
       if (config.prefixes.utils.includes(command)) {
         const subcommand = segments[1] || '';
         if (!subcommand) {
@@ -185,10 +211,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           });
           return;
         }
-        if (
-          (subcommand === 'enable' || subcommand === 'disable') &&
-          context.message_type === 'group'
-        ) {
+        if ((subcommand === 'enable' || subcommand === 'disable') && isGroupChat) {
           const isEnable = subcommand === 'enable';
           const exists = allowlist.groups?.includes(context.group_id);
           if (isEnable && exists) {
@@ -225,7 +248,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           console.log(`[qmoji] Updated group allowlist: ${allowlist}`);
           return;
         }
-        if (subcommand === 'allowlist' && config.admins?.includes(context.user_id)) {
+        if (subcommand === 'allowlist' && isAdmin) {
           const operation = segments[2] || '';
           if (!operation) {
             await send(context, {
@@ -310,7 +333,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           const fetchGlobal = scope.includes('g') || scope.includes('公') || scope.includes('全');
           const images = getImagesByUser(
             fetchPersonal ? context.user_id.toString() : null,
-            context.message_type === 'group' && fetchGroup ? context.group_id.toString() : null,
+            isGroupChat && fetchGroup ? context.group_id.toString() : null,
             fetchGlobal
           );
           if (images.length === 0) {
@@ -353,7 +376,14 @@ napcat.on('message', async (context: AllHandlers['message']) => {
                     groupEntries
                       .slice((page - 1) * 50, page * 50)
                       .map(([id, images]) =>
-                        getEmojiList(id.split('-')[0], [random(images)], false, images.length)
+                        getEmojiList(
+                          id.split('-')[0],
+                          [random(images)],
+                          false,
+                          isAdmin && !isGroupChat,
+                          isGroupChat ? context.group_id : null,
+                          images.length
+                        )
                       )
                   )
                 ).flat()
@@ -387,17 +417,11 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           await clear(context.user_id.toString());
           return;
         }
-        if (
-          (subcommand === 'cleargroup' || subcommand === 'cgr') &&
-          context.message_type === 'group'
-        ) {
+        if ((subcommand === 'cleargroup' || subcommand === 'cgr') && isGroupChat) {
           await clear(`chat-${context.group_id}`);
           return;
         }
-        if (
-          (subcommand === 'clearglobal' || subcommand === 'cgl') &&
-          config.admins?.includes(context.user_id)
-        ) {
+        if ((subcommand === 'clearglobal' || subcommand === 'cgl') && isAdmin) {
           await clear('global');
           return;
         }
@@ -421,8 +445,8 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           const images = getImagesByNameAndUser(
             name,
             context.user_id.toString(),
-            context.message_type === 'group' ? context.group_id.toString() : null,
-            config.admins?.includes(context.user_id)
+            isGroupChat ? context.group_id.toString() : null,
+            isAdmin
           );
           if (images.length === 0) {
             await send(context, {
@@ -489,7 +513,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           if (target === 'global') {
             newUserId = 'global';
           } else if (target === 'group') {
-            if (context.message_type !== 'group') {
+            if (!isGroupChat) {
               await send(context, {
                 type: 'text',
                 data: { text: `只能在群聊中将个人表情转移至群聊层级。` }
@@ -522,7 +546,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         const images = getImagesByNameAndUser(
           name,
           context.user_id.toString(),
-          context.message_type === 'group' ? context.group_id.toString() : null,
+          isGroupChat ? context.group_id.toString() : null,
           true
         );
         await send(
@@ -531,7 +555,13 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             ? {
                 type: 'node',
                 data: {
-                  content: await getEmojiList(name, images, true)
+                  content: await getEmojiList(
+                    name,
+                    images,
+                    true,
+                    isAdmin && !isGroupChat,
+                    isGroupChat ? context.group_id : null
+                  )
                 }
               }
             : {
@@ -563,13 +593,18 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         if (!images.length) return;
 
         try {
+          const savedBy = context.user_id.toString();
+          const savedFrom = isGroupChat ? context.group_id.toString() : null;
+
           images.map(async (image) => {
             const filePath = await downloadImage(image.url, userId, image.file);
-            insertImage(name, filePath, userId);
-            console.log(`[qmoji] User: ${userId}, Name: ${name}, Path: ${filePath}`);
+            insertImage(name, filePath, userId, savedBy, savedFrom);
+            console.log(
+              `[qmoji] User: ${userId}, Name: ${name}, Path: ${filePath}, SavedBy: ${savedBy}, SavedFrom: ${savedFrom || 'private'}`
+            );
           });
 
-          if (context.message_type === 'group') {
+          if (isGroupChat) {
             await napcat.set_msg_emoji_like({
               message_id: context.message_id,
               emoji_id: '124'
@@ -591,7 +626,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
       if (config.prefixes.globalSave.includes(command[0])) {
         await save('global');
       }
-      if (config.prefixes.groupSave.includes(command[0]) && context.message_type === 'group') {
+      if (config.prefixes.groupSave.includes(command[0]) && isGroupChat) {
         await save(`chat-${context.group_id}`);
       }
       if (config.prefixes.save.includes(command[0])) {
@@ -605,12 +640,12 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         const images = getImagesByNameAndUser(
           name,
           context.user_id.toString(),
-          context.message_type === 'group' ? context.group_id.toString() : null,
+          isGroupChat ? context.group_id.toString() : null,
           true
         );
         if (images.length === 0) {
           if (config.reactOnNotFound) {
-            if (context.message_type === 'group') {
+            if (isGroupChat) {
               await napcat.set_msg_emoji_like({
                 message_id: context.message_id,
                 emoji_id: '10068'
@@ -624,7 +659,9 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           }
           return;
         }
-        await send(context, await getEmoji(random(images), true));
+        const selectedImage = random(images);
+        incrementUseCount(selectedImage.id);
+        await send(context, await getEmoji(selectedImage, true));
       }
     }
   } catch (err) {

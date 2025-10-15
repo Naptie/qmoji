@@ -21,9 +21,40 @@ db.exec(`
     name TEXT NOT NULL,
     file_path TEXT NOT NULL,
     user_id TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    saved_by TEXT NOT NULL,
+    saved_from TEXT,
+    use_count INTEGER NOT NULL DEFAULT 0
   )
 `);
+
+// Migration: Add saved_by and saved_from columns if they don't exist
+try {
+  // Check if columns exist by trying to select them
+  db.prepare('SELECT saved_by, saved_from FROM images LIMIT 1').get();
+} catch {
+  // Columns don't exist, add them
+  console.log('[DB] Migrating database: adding saved_by and saved_from columns...');
+  db.exec(`
+    ALTER TABLE images ADD COLUMN saved_by TEXT;
+    ALTER TABLE images ADD COLUMN saved_from TEXT;
+  `);
+  // Backfill existing records: set saved_by to user_id for existing records
+  // Only for actual user IDs (not chat- prefixed or 'global')
+  db.prepare(
+    "UPDATE images SET saved_by = user_id WHERE saved_by IS NULL AND user_id NOT LIKE 'chat-%' AND user_id != 'global'"
+  ).run();
+  console.log('[DB] Migration complete.');
+}
+
+// Migration: Add use_count column if it doesn't exist
+try {
+  db.prepare('SELECT use_count FROM images LIMIT 1').get();
+} catch {
+  console.log('[DB] Migrating database: adding use_count column...');
+  db.exec(`ALTER TABLE images ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0;`);
+  console.log('[DB] Migration complete.');
+}
 
 export interface ImageRecord {
   id: string;
@@ -31,24 +62,49 @@ export interface ImageRecord {
   file_path: string;
   user_id: string;
   created_at: number;
+  saved_by: string;
+  saved_from: string | null;
+  use_count: number;
 }
 
-export const insertImage = (name: string, filePath: string, userId: string): ImageRecord => {
+export const insertImage = (
+  name: string,
+  filePath: string,
+  userId: string,
+  savedBy: string,
+  savedFrom: string | null = null
+): ImageRecord => {
   const id = randomUUID();
   const created_at = Date.now();
+  const use_count = 0;
 
   const stmt = db.prepare(`
-    INSERT INTO images (id, name, file_path, user_id, created_at)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO images (id, name, file_path, user_id, created_at, saved_by, saved_from, use_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  stmt.run(id, name, filePath, userId, created_at);
+  stmt.run(id, name, filePath, userId, created_at, savedBy, savedFrom, use_count);
 
-  return { id, name, file_path: filePath, user_id: userId, created_at };
+  return {
+    id,
+    name,
+    file_path: filePath,
+    user_id: userId,
+    created_at,
+    saved_by: savedBy,
+    saved_from: savedFrom,
+    use_count
+  };
 };
 
 export const deleteImageById = (id: string): boolean => {
   const stmt = db.prepare('DELETE FROM images WHERE id = ?');
+  const result = stmt.run(id);
+  return result.changes > 0;
+};
+
+export const incrementUseCount = (id: string): boolean => {
+  const stmt = db.prepare('UPDATE images SET use_count = use_count + 1 WHERE id = ?');
   const result = stmt.run(id);
   return result.changes > 0;
 };
