@@ -70,9 +70,13 @@ export const getImageById = (id: string): ImageRecord | undefined => {
   return stmt.get(id) as ImageRecord | undefined;
 };
 
-export const getImagesByUser = (userId: string, groupId: string | null = null): ImageRecord[] => {
+export const getImagesByUser = (
+  userId: string | null = null,
+  groupId: string | null = null,
+  includeGlobal = true
+): ImageRecord[] => {
   const stmt = db.prepare(
-    "SELECT * FROM images WHERE (user_id = ? or user_id = ? or user_id = 'global') ORDER BY user_id ASC, created_at DESC"
+    `SELECT * FROM images WHERE (user_id = ? or user_id = ? ${includeGlobal ? "or user_id = 'global'" : ''}) ORDER BY user_id ASC, created_at DESC`
   );
   return stmt.all(userId, `chat-${groupId}`) as ImageRecord[];
 };

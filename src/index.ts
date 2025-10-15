@@ -169,7 +169,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             type: 'text',
             data: {
               text:
-                `${command} list [页数] - 列出已保存的表情\n` +
+                `${command} list [页数] [p/私/自][c/群][g/公/全] - 列出已保存的表情\n` +
                 `${command} {clear/cl} <名称> - 清除指定名称的所有个人表情\n` +
                 `${command} {cleargroup/cgr} <名称> - 清除指定名称的所有群聊表情\n` +
                 `${command} {remove/delete/rm} <名称> <序号> - 删除指定名称的某个表情\n` +
@@ -303,14 +303,19 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         }
         if (subcommand === 'list') {
           const page = parseInt(segments[2]) || 1;
+          const scope = segments[3] || parseInt(segments[2]) ? 'pcg' : segments[2];
+          const fetchPersonal = scope.includes('p') || scope.includes('私') || scope.includes('自');
+          const fetchGroup = scope.includes('c') || scope.includes('群');
+          const fetchGlobal = scope.includes('g') || scope.includes('公') || scope.includes('全');
           const images = getImagesByUser(
-            context.user_id.toString(),
-            context.message_type === 'group' ? context.group_id.toString() : null
+            fetchPersonal ? context.user_id.toString() : null,
+            context.message_type === 'group' && fetchGroup ? context.group_id.toString() : null,
+            fetchGlobal
           );
           if (images.length === 0) {
             await sendMsg(context, {
               type: 'text',
-              data: { text: '你还没有保存任何表情。' }
+              data: { text: '未查询到任何表情。' }
             });
             return;
           }
