@@ -7,7 +7,8 @@ import {
   getImagesByNameAndUser,
   type ImageRecord,
   clearImagesByNameAndUserId,
-  deleteImageById
+  deleteImageById,
+  transferImagesOwnership
 } from './db.js';
 import { deleteImage, downloadImage, allowlist, allowlistPath, random } from './utils.js';
 import { readFile, writeFile } from 'fs/promises';
@@ -169,9 +170,10 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             data: {
               text:
                 `${command} list [页数] - 列出已保存的表情\n` +
-                `${command} {clear|cl} <名称> - 清除指定名称的所有个人表情\n` +
-                `${command} {cleargroup|cgr} <名称> - 清除指定名称的所有群聊表情\n` +
-                `${command} remove <名称> <序号> - 删除指定名称的某个表情\n` +
+                `${command} {clear/cl} <名称> - 清除指定名称的所有个人表情\n` +
+                `${command} {cleargroup/cgr} <名称> - 清除指定名称的所有群聊表情\n` +
+                `${command} {remove/delete} <名称> <序号> - 删除指定名称的某个表情\n` +
+                `${command} {transfer/mv} {group/global} <名称> [序号] - 转移指定名称的 (某个) 个人表情\n` +
                 `${command} enable - 在当前群启用 qmoji (允许所有群成员使用)\n` +
                 `${command} disable - 在当前群禁用 qmoji (仅允许名单中的用户可用)\n` +
                 `${command} <名称> - 列出指定名称的所有表情\n` +
@@ -241,7 +243,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             await sendMsg(context, {
               type: 'text',
               data: {
-                text: `用法：${command} ${subcommand} [add|remove]`
+                text: `用法：${command} ${subcommand} [add/remove]`
               }
             });
             return;
@@ -444,6 +446,70 @@ napcat.on('message', async (context: AllHandlers['message']) => {
               data: { text: `删除失败，可能是表情不存在。` }
             });
           }
+          return;
+        }
+        if (subcommand === 'transfer' || subcommand === 'mv') {
+          const target = segments[2];
+          const name = segments[3];
+          const index = segments[4] ? parseInt(segments[4]) : undefined;
+          if (!name) {
+            await sendMsg(context, {
+              type: 'text',
+              data: {
+                text: `请指定要转移的个人表情名称。用法：${command} ${subcommand} {group/global} <名称> [序号]`
+              }
+            });
+            return;
+          }
+          const images = getImagesByNameAndUser(name, context.user_id.toString());
+          if (images.length === 0) {
+            await sendMsg(context, {
+              type: 'text',
+              data: { text: `没有找到名称为“${name}”的个人表情。` }
+            });
+            return;
+          }
+          if (index !== undefined && (isNaN(index) || index < 1 || index > images.length)) {
+            await sendMsg(context, {
+              type: 'text',
+              data: {
+                text: `序号超出范围。当前共有 ${images.length} 个名称为“${name}”的个人表情。`
+              }
+            });
+            return;
+          }
+          const imagesToTransfer = index !== undefined ? [images[index - 1]] : images;
+          let newUserId: string;
+          if (target === 'global') {
+            newUserId = 'global';
+          } else if (target === 'group') {
+            if (context.message_type !== 'group') {
+              await sendMsg(context, {
+                type: 'text',
+                data: { text: `只能在群聊中将个人表情转移至群聊层级。` }
+              });
+              return;
+            }
+            newUserId = `chat-${context.group_id}`;
+          } else {
+            await sendMsg(context, {
+              type: 'text',
+              data: {
+                text: `请指定目标层级（group 或 global）。用法：${command} ${subcommand} {group/global} <名称> [序号]`
+              }
+            });
+            return;
+          }
+          const transferredCount = transferImagesOwnership(
+            imagesToTransfer.map((img) => img.id),
+            newUserId
+          );
+          await sendMsg(context, {
+            type: 'text',
+            data: {
+              text: `成功将 ${transferredCount} 个个人表情转移至${target === 'global' ? '全局' : '群聊'}层级。`
+            }
+          });
           return;
         }
         const name = subcommand;

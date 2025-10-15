@@ -59,6 +59,12 @@ export const clearImagesByNameAndUserId = (name: string, userId: string): number
   return result.changes;
 };
 
+export const transferImagesOwnership = (idList: string[], newUserId: string): number => {
+  const stmt = db.prepare('UPDATE images SET user_id = ? WHERE id = ?');
+  const results = idList.map((id) => stmt.run(newUserId, id));
+  return results.reduce((acc, r) => acc + (r.changes > 0 ? 1 : 0), 0);
+};
+
 export const getImageById = (id: string): ImageRecord | undefined => {
   const stmt = db.prepare('SELECT * FROM images WHERE id = ?');
   return stmt.get(id) as ImageRecord | undefined;
