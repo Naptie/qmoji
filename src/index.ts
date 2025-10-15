@@ -92,7 +92,7 @@ const getEmojiList = async (
       images.map(async (img, i) => {
         const imgSegment = await getEmoji(img);
         const ownershipLabel =
-          img.user_id === 'global' ? '(全局)' : img.user_id.startsWith('chat-') ? '(群聊)' : '';
+          img.user_id === 'global' ? ' (全局)' : img.user_id.startsWith('chat-') ? ' (群聊)' : '';
         const useCountInfo = ` (${img.use_count} 次)`;
         const savedById = parseInt(img.saved_by);
         const savedFromId = img.saved_from ? parseInt(img.saved_from) : null;
@@ -111,7 +111,7 @@ const getEmojiList = async (
               {
                 type: 'text',
                 data: {
-                  text: `${i + 1}. ${ownershipLabel}${useCountInfo}${savedByInfo}${savedFromInfo}\n`
+                  text: `${i + 1}.${ownershipLabel}${useCountInfo}${savedByInfo}${savedFromInfo}\n`
                 }
               } satisfies TextSegment,
               imgSegment
