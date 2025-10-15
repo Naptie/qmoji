@@ -28,34 +28,6 @@ db.exec(`
   )
 `);
 
-// Migration: Add saved_by and saved_from columns if they don't exist
-try {
-  // Check if columns exist by trying to select them
-  db.prepare('SELECT saved_by, saved_from FROM images LIMIT 1').get();
-} catch {
-  // Columns don't exist, add them
-  console.log('[DB] Migrating database: adding saved_by and saved_from columns...');
-  db.exec(`
-    ALTER TABLE images ADD COLUMN saved_by TEXT;
-    ALTER TABLE images ADD COLUMN saved_from TEXT;
-  `);
-  // Backfill existing records: set saved_by to user_id for existing records
-  // Only for actual user IDs (not chat- prefixed or 'global')
-  db.prepare(
-    "UPDATE images SET saved_by = user_id WHERE saved_by IS NULL AND user_id NOT LIKE 'chat-%' AND user_id != 'global'"
-  ).run();
-  console.log('[DB] Migration complete.');
-}
-
-// Migration: Add use_count column if it doesn't exist
-try {
-  db.prepare('SELECT use_count FROM images LIMIT 1').get();
-} catch {
-  console.log('[DB] Migrating database: adding use_count column...');
-  db.exec(`ALTER TABLE images ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0;`);
-  console.log('[DB] Migration complete.');
-}
-
 export interface ImageRecord {
   id: string;
   name: string;
