@@ -546,22 +546,28 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         if (!name) {
           return;
         }
-        const reply = context.message.find((m) => m.type === 'reply');
-        if (!reply) return;
-        const replyMsg = await napcat.get_msg({
-          message_id: parseInt(reply.data.id)
-        });
-        const image = replyMsg.message.find((m) => m.type === 'image')?.data;
-        if (!image) return;
+        const images = [
+          ...context.message,
+          ...((
+            await (async () => {
+              const reply = context.message.find((m) => m.type === 'reply');
+              if (!reply) return;
+              return await napcat.get_msg({
+                message_id: parseInt(reply.data.id)
+              });
+            })()
+          )?.message || [])
+        ]
+          .filter((m) => m.type === 'image')
+          .map((m) => m.data);
+        if (!images.length) return;
 
         try {
-          // Download and save the image
-          const filePath = await downloadImage(image.url, userId, image.file);
-
-          // Save to database
-          insertImage(name, filePath, userId);
-
-          console.log(`[qmoji] User: ${userId}, Name: ${name}, Path: ${filePath}`);
+          images.map(async (image) => {
+            const filePath = await downloadImage(image.url, userId, image.file);
+            insertImage(name, filePath, userId);
+            console.log(`[qmoji] User: ${userId}, Name: ${name}, Path: ${filePath}`);
+          });
 
           if (context.message_type === 'group') {
             await napcat.set_msg_emoji_like({
