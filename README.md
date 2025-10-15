@@ -11,6 +11,8 @@
   "admins": [3237266617],
   "prefixes": {
     "save": ["#"], // 须为单字符
+    "groupSave": ["%"], // 须为单字符
+    "globalSave": ["&"], // 须为单字符
     "use": ["."], // 须为单字符
     "utils": ["qmoji"]
   },
