@@ -115,7 +115,7 @@ const deleteEmoji = (context: AllHandlers['message'], image: ImageRecord) => {
   }
 };
 
-const sendMsg = async (context: AllHandlers['message'], ...segments: SendMessageSegment[]) => {
+const send = async (context: AllHandlers['message'], ...segments: SendMessageSegment[]) => {
   if (context.message_type === 'group') {
     return await napcat.send_msg({
       group_id: context.group_id,
@@ -165,7 +165,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
       if (config.prefixes.utils.includes(command)) {
         const subcommand = segments[1] || '';
         if (!subcommand) {
-          await sendMsg(context, {
+          await send(context, {
             type: 'text',
             data: {
               text:
@@ -192,14 +192,14 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           const isEnable = subcommand === 'enable';
           const exists = allowlist.groups?.includes(context.group_id);
           if (isEnable && exists) {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: `本群已在允许名单中，无需重复添加。` }
             });
             return;
           }
           if (!isEnable && !exists) {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: `本群不在允许名单中，无需移除。` }
             });
@@ -210,13 +210,13 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           }
           if (isEnable) {
             allowlist.groups.push(context.group_id);
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: `已将本群添加到允许名单。` }
             });
           } else {
             allowlist.groups = allowlist.groups.filter((id) => id !== context.group_id);
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: `已将本群从允许名单中移除。` }
             });
@@ -228,7 +228,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         if (subcommand === 'allowlist' && config.admins?.includes(context.user_id)) {
           const operation = segments[2] || '';
           if (!operation) {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: {
                 text:
@@ -240,7 +240,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             return;
           }
           if (operation !== 'add' && operation !== 'remove') {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: {
                 text: `用法：${command} ${subcommand} [add/remove]`
@@ -250,7 +250,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           }
           const mention = context.message.find((m) => m.type === 'at');
           if (!mention) {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: {
                 text: `请提及需要操作的用户。用法：${command} ${subcommand} ${operation} @用户`
@@ -261,7 +261,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           const targetId = parseInt(mention.data.qq);
           const target = await getUserName(targetId);
           if (isNaN(targetId)) {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: `无法识别提及的用户。` }
             });
@@ -269,7 +269,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           }
           if (operation === 'add') {
             if (allowlist.users?.includes(targetId)) {
-              await sendMsg(context, {
+              await send(context, {
                 type: 'text',
                 data: { text: `用户 ${target} 已在允许名单中。` }
               });
@@ -279,20 +279,20 @@ napcat.on('message', async (context: AllHandlers['message']) => {
               allowlist.users = [];
             }
             allowlist.users.push(targetId);
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: `已将用户 ${target} 添加到允许名单。` }
             });
           } else if (operation === 'remove') {
             if (!allowlist.users?.includes(targetId)) {
-              await sendMsg(context, {
+              await send(context, {
                 type: 'text',
                 data: { text: `用户 ${target} 不在允许名单中。` }
               });
               return;
             }
             allowlist.users = allowlist.users.filter((id) => id !== targetId);
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: `已将用户 ${target} 从允许名单中移除。` }
             });
@@ -314,7 +314,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             fetchGlobal
           );
           if (images.length === 0) {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: '未查询到任何表情。' }
             });
@@ -332,13 +332,13 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           );
           const groupEntries = Object.entries(groups);
           if (page < 1 || (page - 1) * 50 >= groupEntries.length) {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: `页数超出范围。当前共有 ${Math.ceil(groupEntries.length / 50)} 页。` }
             });
             return;
           }
-          await sendMsg(context, {
+          await send(context, {
             type: 'node',
             data: {
               content: [
@@ -365,7 +365,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         const clear = async (userId: string) => {
           const name = segments[2];
           if (!name) {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: `请指定要清除的表情名称。用法：${command} ${subcommand} <名称>` }
             });
@@ -378,7 +378,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
               deleteEmoji(context, img);
             });
           }
-          await sendMsg(context, {
+          await send(context, {
             type: 'text',
             data: { text: `成功清除 ${deletedCount} 个表情。` }
           });
@@ -405,14 +405,14 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           const name = segments[2];
           const index = parseInt(segments[3]);
           if (!name) {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: `请指定要删除的表情名称。用法：${command} ${subcommand} <名称> <序号>` }
             });
             return;
           }
           if (isNaN(index) || index < 1) {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: `请指定要删除的表情序号。用法：${command} ${subcommand} <名称> <序号>` }
             });
@@ -425,14 +425,14 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             config.admins?.includes(context.user_id)
           );
           if (images.length === 0) {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: `没有找到名称为“${name}”的表情。` }
             });
             return;
           }
           if (index > images.length) {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: `序号超出范围。当前共有 ${images.length} 个表情。` }
             });
@@ -442,12 +442,12 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           const success = deleteImageById(imageToDelete.id);
           if (success) {
             deleteEmoji(context, imageToDelete);
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: `成功删除名称为“${name}”的第 ${index} 个表情。` }
             });
           } else {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: `删除失败，可能是表情不存在。` }
             });
@@ -459,7 +459,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           const name = segments[3];
           const index = segments[4] ? parseInt(segments[4]) : undefined;
           if (!name) {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: {
                 text: `请指定要转移的个人表情名称。用法：${command} ${subcommand} {group/global} <名称> [序号]`
@@ -469,14 +469,14 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           }
           const images = getImagesByNameAndUser(name, context.user_id.toString());
           if (images.length === 0) {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: `没有找到名称为“${name}”的个人表情。` }
             });
             return;
           }
           if (index !== undefined && (isNaN(index) || index < 1 || index > images.length)) {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: {
                 text: `序号超出范围。当前共有 ${images.length} 个名称为“${name}”的个人表情。`
@@ -490,7 +490,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             newUserId = 'global';
           } else if (target === 'group') {
             if (context.message_type !== 'group') {
-              await sendMsg(context, {
+              await send(context, {
                 type: 'text',
                 data: { text: `只能在群聊中将个人表情转移至群聊层级。` }
               });
@@ -498,7 +498,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             }
             newUserId = `chat-${context.group_id}`;
           } else {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: {
                 text: `请指定目标层级（group 或 global）。用法：${command} ${subcommand} {group/global} <名称> [序号]`
@@ -510,7 +510,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             imagesToTransfer.map((img) => img.id),
             newUserId
           );
-          await sendMsg(context, {
+          await send(context, {
             type: 'text',
             data: {
               text: `成功将 ${transferredCount} 个个人表情转移至${target === 'global' ? '全局' : '群聊'}层级。`
@@ -525,7 +525,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           context.message_type === 'group' ? context.group_id.toString() : null,
           true
         );
-        await sendMsg(
+        await send(
           context,
           images.length > 0
             ? {
@@ -569,14 +569,14 @@ napcat.on('message', async (context: AllHandlers['message']) => {
               emoji_id: '124'
             });
           } else {
-            await sendMsg(context, {
+            await send(context, {
               type: 'text',
               data: { text: '保存成功！' }
             });
           }
         } catch (error) {
           console.error('[qmoji] Failed to save image:', error);
-          await sendMsg(context, {
+          await send(context, {
             type: 'text',
             data: { text: `保存失败：${error instanceof Error ? error.message : '未知错误'}` }
           });
@@ -610,7 +610,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
                 emoji_id: '10068'
               });
             } else {
-              await sendMsg(context, {
+              await send(context, {
                 type: 'text',
                 data: { text: `未找到名称为“${name}”的表情。` }
               });
@@ -618,7 +618,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           }
           return;
         }
-        await sendMsg(context, await getEmoji(random(images), true));
+        await send(context, await getEmoji(random(images), true));
       }
     }
   } catch (err) {
