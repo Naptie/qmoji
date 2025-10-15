@@ -172,7 +172,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
                 `${command} list [页数] - 列出已保存的表情\n` +
                 `${command} {clear/cl} <名称> - 清除指定名称的所有个人表情\n` +
                 `${command} {cleargroup/cgr} <名称> - 清除指定名称的所有群聊表情\n` +
-                `${command} {remove/delete} <名称> <序号> - 删除指定名称的某个表情\n` +
+                `${command} {remove/delete/rm} <名称> <序号> - 删除指定名称的某个表情\n` +
                 `${command} {transfer/mv} {group/global} <名称> [序号] - 转移指定名称的 (某个) 个人表情\n` +
                 `${command} enable - 在当前群启用 qmoji (允许所有群成员使用)\n` +
                 `${command} disable - 在当前群禁用 qmoji (仅允许名单中的用户可用)\n` +
@@ -339,7 +339,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
                 {
                   type: 'text',
                   data: {
-                    text: `已保存的表情列表 (共 ${groupEntries.length} 个名称) (第 ${page} 页，共 ${Math.ceil(groupEntries.length / 50)} 页)\n`
+                    text: `已保存的表情列表 (${groupEntries.length}) (第 ${page} 页，共 ${Math.ceil(groupEntries.length / 50)} 页)\n`
                   }
                 },
                 ...(
@@ -395,7 +395,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           await clear('global');
           return;
         }
-        if (subcommand === 'remove' || subcommand === 'delete') {
+        if (subcommand === 'remove' || subcommand === 'delete' || subcommand === 'rm') {
           const name = segments[2];
           const index = parseInt(segments[3]);
           if (!name) {
