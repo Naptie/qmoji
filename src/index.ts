@@ -303,7 +303,8 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         }
         if (subcommand === 'list') {
           const page = parseInt(segments[2]) || 1;
-          const scope = segments[3] || parseInt(segments[2]) ? 'pcg' : segments[2];
+          const scope =
+            segments[3] || (!segments[2] || parseInt(segments[2]) ? 'pcg' : segments[2]);
           const fetchPersonal = scope.includes('p') || scope.includes('私') || scope.includes('自');
           const fetchGroup = scope.includes('c') || scope.includes('群');
           const fetchGlobal = scope.includes('g') || scope.includes('公') || scope.includes('全');
