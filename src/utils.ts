@@ -9,10 +9,13 @@ const __dirname = path.dirname(__filename);
 export const allowlistPath = resolve(__dirname, '../allowlist.json');
 
 if (!fs.existsSync(allowlistPath)) {
-  fs.writeFileSync(allowlistPath, JSON.stringify(config.admins));
+  fs.writeFileSync(allowlistPath, JSON.stringify({ users: config.admins }));
 }
 
-export const allowlist = JSON.parse(fs.readFileSync(allowlistPath, 'utf-8')) as number[];
+export const allowlist = JSON.parse(fs.readFileSync(allowlistPath, 'utf-8')) as {
+  users?: number[];
+  groups?: number[];
+};
 
 export const downloadImage = async (
   url: string,

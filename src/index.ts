@@ -48,6 +48,11 @@ const getUserName = async (id: number) => {
   return user?.nickname ? `${user.nickname} (${id})` : id.toString();
 };
 
+const getGroupName = async (id: number) => {
+  const group = await napcat.get_group_info({ group_id: id });
+  return group?.group_name ? `${group.group_name} (${id})` : id.toString();
+};
+
 const getEmoji = async (image: ImageRecord, showName = false) => {
   try {
     const fullPath = resolve(process.cwd(), image.file_path);
@@ -140,7 +145,10 @@ napcat.on('socket.close', () => {
 
 napcat.on('message', async (context: AllHandlers['message']) => {
   try {
-    if (allowlist && !allowlist.includes(context.user_id)) {
+    if (
+      !allowlist.users?.includes(context.user_id) &&
+      (!('group_id' in context) || !allowlist.groups?.includes(context.group_id))
+    ) {
       return;
     }
     const message = context.message.find((m) => m.type === 'text');
@@ -163,28 +171,66 @@ napcat.on('message', async (context: AllHandlers['message']) => {
                 `${command} list - 列出已保存的表情\n` +
                 `${command} clear <名称> - 清除指定名称的所有表情\n` +
                 `${command} remove <名称> <序号> - 删除指定名称的某个表情\n` +
+                `${command} enable - 在当前群启用 qmoji (允许所有群成员使用)\n` +
+                `${command} disable - 在当前群禁用 qmoji (仅允许名单中的用户可用)\n` +
                 `${command} <名称> - 列出指定名称的所有表情\n` +
-                `保存表情：在回复的消息中使用 ${config.prefixes.save[0]}<名称> 进行保存\n` +
+                `保存个人表情：在回复的消息中使用 ${config.prefixes.save[0]}<名称> 进行保存\n` +
                 `保存全局表情：在回复的消息中使用 ${config.prefixes.globalSave[0]}<名称> 进行保存\n` +
                 `使用表情：在消息中使用 ${config.prefixes.use[0]}<名称> 进行发送`
             }
           });
           return;
         }
+        if (
+          (subcommand === 'enable' || subcommand === 'disable') &&
+          context.message_type === 'group'
+        ) {
+          const isEnable = subcommand === 'enable';
+          const exists = allowlist.groups?.includes(context.group_id);
+          if (isEnable && exists) {
+            await sendMsg(context, {
+              type: 'text',
+              data: { text: `本群已在允许名单中，无需重复添加。` }
+            });
+            return;
+          }
+          if (!isEnable && !exists) {
+            await sendMsg(context, {
+              type: 'text',
+              data: { text: `本群不在允许名单中，无需移除。` }
+            });
+            return;
+          }
+          if (!allowlist.groups) {
+            allowlist.groups = [];
+          }
+          if (isEnable) {
+            allowlist.groups.push(context.group_id);
+            await sendMsg(context, {
+              type: 'text',
+              data: { text: `已将本群添加到允许名单。` }
+            });
+          } else {
+            allowlist.groups = allowlist.groups.filter((id) => id !== context.group_id);
+            await sendMsg(context, {
+              type: 'text',
+              data: { text: `已将本群从允许名单中移除。` }
+            });
+          }
+          await writeFile(allowlistPath, JSON.stringify(allowlist), 'utf-8');
+          console.log(`[qmoji] Updated group allowlist: ${allowlist}`);
+          return;
+        }
         if (subcommand === 'allowlist' && config.admins?.includes(context.user_id)) {
           const operation = segments[2] || '';
           if (!operation) {
-            if (!allowlist || allowlist.length === 0) {
-              await sendMsg(context, {
-                type: 'text',
-                data: { text: '当前允许名单为空，任何人均可使用指令。' }
-              });
-              return;
-            }
             await sendMsg(context, {
               type: 'text',
               data: {
-                text: `当前允许名单：\n${(await Promise.all(allowlist.map(async (id) => `- ${await getUserName(id)}`))).join('\n')}`
+                text:
+                  'qmoji 允许名单\n' +
+                  `用户：\n${allowlist.users ? (await Promise.all(allowlist.users.map(async (id) => `- ${await getUserName(id)}`))).join('\n') : '无'}\n` +
+                  `群聊：\n${allowlist.groups ? (await Promise.all(allowlist.groups.map(async (id) => `- ${await getGroupName(id)}`))).join('\n') : '无'}`
               }
             });
             return;
@@ -218,34 +264,37 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             return;
           }
           if (operation === 'add') {
-            if (allowlist.includes(targetId)) {
+            if (allowlist.users?.includes(targetId)) {
               await sendMsg(context, {
                 type: 'text',
                 data: { text: `用户 ${target} 已在允许名单中。` }
               });
               return;
             }
-            allowlist.push(targetId);
+            if (!allowlist.users) {
+              allowlist.users = [];
+            }
+            allowlist.users.push(targetId);
             await sendMsg(context, {
               type: 'text',
               data: { text: `已将用户 ${target} 添加到允许名单。` }
             });
           } else if (operation === 'remove') {
-            if (!allowlist || !allowlist.includes(targetId)) {
+            if (!allowlist.users?.includes(targetId)) {
               await sendMsg(context, {
                 type: 'text',
                 data: { text: `用户 ${target} 不在允许名单中。` }
               });
               return;
             }
-            allowlist.splice(allowlist.indexOf(targetId), 1);
+            allowlist.users = allowlist.users.filter((id) => id !== targetId);
             await sendMsg(context, {
               type: 'text',
               data: { text: `已将用户 ${target} 从允许名单中移除。` }
             });
           }
           await writeFile(allowlistPath, JSON.stringify(allowlist), 'utf-8');
-          console.log(`[qmoji] Updated allowlist: ${allowlist}`);
+          console.log(`[qmoji] Updated user allowlist: ${allowlist}`);
           return;
         }
         if (subcommand === 'list') {
