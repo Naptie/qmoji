@@ -64,22 +64,23 @@ export const getImageById = (id: string): ImageRecord | undefined => {
   return stmt.get(id) as ImageRecord | undefined;
 };
 
-export const getImagesByUserId = (userId: string): ImageRecord[] => {
+export const getImagesByUser = (userId: string, groupId: string | null = null): ImageRecord[] => {
   const stmt = db.prepare(
-    'SELECT * FROM images WHERE (user_id = ? or user_id = \'global\') ORDER BY user_id ASC, created_at DESC'
+    "SELECT * FROM images WHERE (user_id = ? or user_id = ? or user_id = 'global') ORDER BY user_id ASC, created_at DESC"
   );
-  return stmt.all(userId) as ImageRecord[];
+  return stmt.all(userId, `chat-${groupId}`) as ImageRecord[];
 };
 
-export const getImagesByNameAndUserId = (
+export const getImagesByNameAndUser = (
   name: string,
   userId: string,
+  groupId: string | null = null,
   includeGlobal = false
 ): ImageRecord[] => {
   const stmt = db.prepare(
-    `SELECT * FROM images WHERE name = ? AND (user_id = ? ${includeGlobal ? 'or user_id = \'global\'' : ''}) ORDER BY user_id ASC, created_at DESC`
+    `SELECT * FROM images WHERE name = ? AND (user_id = ? or user_id = ? ${includeGlobal ? "or user_id = 'global'" : ''}) ORDER BY user_id ASC, created_at DESC`
   );
-  return stmt.all(name, userId) as ImageRecord[];
+  return stmt.all(name, userId, `chat-${groupId}`) as ImageRecord[];
 };
 
 export const getAllImages = (): ImageRecord[] => {
