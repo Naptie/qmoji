@@ -51,6 +51,14 @@ export const deleteImage = (filePath: string): void => {
   }
 };
 
+export const formatBytes = (totalSize: number): string => {
+  if (totalSize === 0) return '0 B';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  const k = 1024;
+  const i = Math.floor(Math.log(totalSize) / Math.log(k));
+  return `${(totalSize / Math.pow(k, i)).toFixed(2)} ${units[i]}`;
+};
+
 export const random = <T>(items: T[]): T => {
   return items[Math.floor(Math.random() * items.length)];
 };

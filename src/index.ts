@@ -12,10 +12,18 @@ import {
   incrementUseCount,
   getAllImages
 } from './db.js';
-import { deleteImage, downloadImage, allowlist, allowlistPath, random } from './utils.js';
+import {
+  deleteImage,
+  downloadImage,
+  allowlist,
+  allowlistPath,
+  random,
+  formatBytes
+} from './utils.js';
 import { readFile, writeFile } from 'fs/promises';
 import { resolve } from 'path';
 import config from '../config.json' with { type: 'json' };
+import { stat } from 'fs/promises';
 
 const napcat = new NCWebsocket(
   {
@@ -47,6 +55,7 @@ const createSignallable = <T>() => {
 };
 
 const getUserName = async (id: number) => {
+  if (!id || isNaN(id)) return id.toString();
   const user = await napcat.get_stranger_info({ user_id: id });
   return user?.nickname ? `${user.nickname} (${id})` : id.toString();
 };
@@ -323,6 +332,93 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           }
           await writeFile(allowlistPath, JSON.stringify(allowlist), 'utf-8');
           console.log(`[qmoji] Updated user allowlist: ${await getUserName(targetId)}`);
+          return;
+        }
+        if (subcommand === 'stats' && isAdmin) {
+          const statsMap = new Map<
+            string,
+            { userId: string; count: number; totalUses: number; totalSize: number }
+          >();
+          const results = await Promise.all(
+            getAllImages().map(async (img) => {
+              try {
+                const fullPath = resolve(process.cwd(), img.file_path);
+                const fileStats = await stat(fullPath);
+                const size = fileStats.size;
+                return { userId: img.user_id, useCount: img.use_count, size };
+              } catch (err) {
+                console.error(`[qmoji] Failed to stat image ${img.file_path}:`, err);
+                return { userId: img.user_id, useCount: img.use_count, size: 0 };
+              }
+            })
+          );
+          for (const { userId, useCount, size } of results) {
+            if (!statsMap.has(userId)) {
+              statsMap.set(userId, {
+                userId,
+                count: 1,
+                totalUses: useCount,
+                totalSize: size
+              });
+            } else {
+              statsMap.get(userId)!.count += 1;
+              statsMap.get(userId)!.totalUses += useCount;
+              statsMap.get(userId)!.totalSize += size;
+            }
+          }
+          const stats = (
+            await Promise.all(
+              Array.from(statsMap.entries()).map(async ([id, info]) =>
+                id === 'global'
+                  ? { type: 1, name: null, ...info }
+                  : id.startsWith('chat-')
+                    ? {
+                        type: 2,
+                        name: await getGroupName(parseInt(id.slice(5))),
+                        ...info
+                      }
+                    : { type: 3, name: await getUserName(parseInt(id)), ...info }
+              )
+            )
+          ).sort((a, b) => (a.type === b.type ? b.totalSize - a.totalSize : a.type - b.type));
+
+          const groupedStats = stats.reduce(
+            (acc, item) => {
+              if (!acc[item.type]) acc[item.type] = [];
+              acc[item.type].push(item);
+              return acc;
+            },
+            {} as Record<number, typeof stats>
+          );
+
+          const lines = [
+            '储存总览',
+            '总计：',
+            ` - 共 ${stats.length} 个表情`,
+            ` - 使用 ${stats.reduce((sum, s) => sum + s.totalUses, 0)} 次`,
+            ` - 占用 ${formatBytes(stats.reduce((sum, s) => sum + s.totalSize, 0))}`
+          ];
+          for (const [typeStr, items] of Object.entries(groupedStats)) {
+            const type = parseInt(typeStr);
+            const label = type === 1 ? '全局' : type === 2 ? '群组' : '用户';
+            lines.push('', `${label}：`);
+            for (const item of items) {
+              lines.push(
+                ` - ${item.name ? `${item.name}：` : ''}共 ${item.count} 个, 使用 ${item.totalUses} 次, 占用 ${formatBytes(item.totalSize)}`
+              );
+            }
+          }
+
+          const segments: SendMessageSegment[] = [];
+          for (let i = 0; i < lines.length; i += 50) {
+            const batch = lines.slice(i, i + 50);
+            segments.push({
+              type: 'node',
+              data: { content: [{ type: 'text', data: { text: batch.join('\n') } }] }
+            });
+          }
+
+          await send(context, ...segments);
           return;
         }
         if (subcommand === 'list' || (subcommand === 'listall' && isAdmin)) {
