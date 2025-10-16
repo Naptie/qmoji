@@ -8,7 +8,7 @@
 {
   "napcatWs": "ws://127.0.0.1:3001",
   "napcatToken": "token",
-  "admins": [3237266617],
+  "admins": [123456789],
   "prefixes": {
     "save": ["#"], // 须为单字符
     "groupSave": ["%"], // 须为单字符
