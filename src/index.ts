@@ -246,7 +246,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             });
           }
           await writeFile(allowlistPath, JSON.stringify(allowlist), 'utf-8');
-          console.log(`[qmoji] Updated group allowlist: ${allowlist}`);
+          console.log(`[qmoji] Updated group allowlist: ${await getGroupName(context.group_id)}`);
           return;
         }
         if (subcommand === 'allowlist' && isAdmin) {
@@ -322,7 +322,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             });
           }
           await writeFile(allowlistPath, JSON.stringify(allowlist), 'utf-8');
-          console.log(`[qmoji] Updated user allowlist: ${allowlist}`);
+          console.log(`[qmoji] Updated user allowlist: ${await getUserName(targetId)}`);
           return;
         }
         if (subcommand === 'list' || (subcommand === 'listall' && isAdmin)) {
