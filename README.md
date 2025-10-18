@@ -19,3 +19,7 @@
   "reactOnNotFound": true
 }
 ```
+
+## 权限控制
+
+启用 `config.json` 中的 `enablePolicyAuth` 后，可使用`qmoji perm`命令管理权限。
