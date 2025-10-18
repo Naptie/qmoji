@@ -141,7 +141,7 @@ const getEmojiList = async (
       data: {
         text:
           `「${name}」(${images.every((i) => i.user_id === 'global') ? '全局, ' : images.every((i) => i.user_id.startsWith('chat-')) ? '群聊, ' : ''}共 ${count !== undefined ? count : images.length} 个, 使用 ${totalUses} 次)` +
-          (page ? ` (第 ${page} 页，共 ${Math.ceil(images.length / pageSize)} 页)` : '') +
+          (page ? ` (第 ${page} 页, 共 ${Math.ceil(images.length / pageSize)} 页)` : '') +
           (saveInfo ? `\n${saveInfo}` : '') +
           `\n`
       }
