@@ -93,13 +93,17 @@ const getEmojiList = async (
   showIndex = false,
   showSensitiveSaveInfo = false,
   groupId: number | null = null,
-  count?: number
+  count?: number,
+  page?: number,
+  pageSize = 20
 ): Promise<SendMessageSegment[]> => {
   const totalUses = images.reduce((sum, img) => sum + img.use_count, 0);
   let saveInfo = '';
+  const imagesToShow =
+    page !== undefined ? images.slice((page - 1) * pageSize, page * pageSize) : images;
   const segments = (
     await Promise.all(
-      images.map(async (img, i) => {
+      imagesToShow.map(async (img, i) => {
         const imgSegment = await getEmoji(img);
         const ownershipLabel =
           img.user_id === 'global' ? ' (全局)' : img.user_id.startsWith('chat-') ? ' (群聊)' : '';
@@ -121,7 +125,7 @@ const getEmojiList = async (
               {
                 type: 'text',
                 data: {
-                  text: `${i + 1}.${ownershipLabel}${useCountInfo}${savedByInfo}${savedFromInfo}\n`
+                  text: `${(page ? (page - 1) * pageSize : 0) + i + 1}.${ownershipLabel}${useCountInfo}${savedByInfo}${savedFromInfo}\n`
                 }
               } satisfies TextSegment,
               imgSegment
@@ -135,7 +139,11 @@ const getEmojiList = async (
     {
       type: 'text',
       data: {
-        text: `「${name}」(${images.every((i) => i.user_id === 'global') ? '全局, ' : images.every((i) => i.user_id.startsWith('chat-')) ? '群聊, ' : ''}共 ${count !== undefined ? count : images.length} 个, 使用 ${totalUses} 次)${saveInfo ? `\n${saveInfo}` : ''}\n`
+        text:
+          `「${name}」(${images.every((i) => i.user_id === 'global') ? '全局, ' : images.every((i) => i.user_id.startsWith('chat-')) ? '群聊, ' : ''}共 ${count !== undefined ? count : images.length} 个, 使用 ${totalUses} 次)` +
+          (page ? ` (第 ${page} 页，共 ${Math.ceil(images.length / pageSize)} 页)` : '') +
+          (saveInfo ? `\n${saveInfo}` : '') +
+          `\n`
       }
     },
     ...segments
@@ -657,28 +665,21 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           });
           return;
         }
-        const imagesToShow = images.slice((page - 1) * 50, page * 50);
         await send(
           context,
           images.length > 0
             ? {
                 type: 'node',
                 data: {
-                  content: [
-                    {
-                      type: 'text',
-                      data: {
-                        text: `第 ${page} 页，共 ${Math.ceil(images.length / 50)} 页\n`
-                      }
-                    },
-                    ...(await getEmojiList(
-                      name,
-                      imagesToShow,
-                      true,
-                      isAdmin && !isGroupChat,
-                      isGroupChat ? context.group_id : null
-                    ))
-                  ]
+                  content: await getEmojiList(
+                    name,
+                    images,
+                    true,
+                    isAdmin && !isGroupChat,
+                    isGroupChat ? context.group_id : null,
+                    images.length,
+                    page
+                  )
                 }
               }
             : {
