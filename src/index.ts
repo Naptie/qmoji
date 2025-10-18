@@ -643,25 +643,42 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           return;
         }
         const name = subcommand;
+        const page = parseInt(segments[2]) || 1;
         const images = getImagesByNameAndUser(
           name,
           context.user_id.toString(),
           isGroupChat ? context.group_id.toString() : null,
           true
         );
+        if (page < 1 || (page - 1) * 50 >= images.length) {
+          await send(context, {
+            type: 'text',
+            data: { text: `页数超出范围。当前共有 ${Math.ceil(images.length / 50)} 页。` }
+          });
+          return;
+        }
+        const imagesToShow = images.slice((page - 1) * 50, page * 50);
         await send(
           context,
           images.length > 0
             ? {
                 type: 'node',
                 data: {
-                  content: await getEmojiList(
-                    name,
-                    images,
-                    true,
-                    isAdmin && !isGroupChat,
-                    isGroupChat ? context.group_id : null
-                  )
+                  content: [
+                    {
+                      type: 'text',
+                      data: {
+                        text: `第 ${page} 页，共 ${Math.ceil(images.length / 50)} 页\n`
+                      }
+                    },
+                    ...(await getEmojiList(
+                      name,
+                      imagesToShow,
+                      true,
+                      isAdmin && !isGroupChat,
+                      isGroupChat ? context.group_id : null
+                    ))
+                  ]
                 }
               }
             : {
