@@ -652,16 +652,17 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         }
         const name = subcommand;
         const page = parseInt(segments[2]) || 1;
+        const pageSize = 20;
         const images = getImagesByNameAndUser(
           name,
           context.user_id.toString(),
           isGroupChat ? context.group_id.toString() : null,
           true
         );
-        if (page < 1 || (page - 1) * 50 >= images.length) {
+        if (page < 1 || (page - 1) * pageSize >= images.length) {
           await send(context, {
             type: 'text',
-            data: { text: `页数超出范围。当前共有 ${Math.ceil(images.length / 50)} 页。` }
+            data: { text: `页数超出范围。当前共有 ${Math.ceil(images.length / pageSize)} 页。` }
           });
           return;
         }
@@ -678,7 +679,8 @@ napcat.on('message', async (context: AllHandlers['message']) => {
                     isAdmin && !isGroupChat,
                     isGroupChat ? context.group_id : null,
                     images.length,
-                    page
+                    page,
+                    pageSize
                   )
                 }
               }
