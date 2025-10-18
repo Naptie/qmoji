@@ -153,13 +153,17 @@ const getEmojiList = async (
   showIndex = false,
   showSensitiveSaveInfo = false,
   groupId: number | null = null,
-  count?: number
+  count?: number,
+  page?: number,
+  pageSize = 20
 ): Promise<SendMessageSegment[]> => {
   const totalUses = images.reduce((sum, img) => sum + img.use_count, 0);
   let saveInfo = '';
+  const imagesToShow =
+    page !== undefined ? images.slice((page - 1) * pageSize, page * pageSize) : images;
   const segments = (
     await Promise.all(
-      images.map(async (img, i) => {
+      imagesToShow.map(async (img, i) => {
         const imgSegment = await getEmoji(img);
         const ownershipLabel =
           img.user_id === 'global' ? ' (全局)' : img.user_id.startsWith('chat-') ? ' (群聊)' : '';
@@ -181,7 +185,7 @@ const getEmojiList = async (
               {
                 type: 'text',
                 data: {
-                  text: `${i + 1}.${ownershipLabel}${useCountInfo}${savedByInfo}${savedFromInfo}\n`
+                  text: `${(page ? (page - 1) * pageSize : 0) + i + 1}.${ownershipLabel}${useCountInfo}${savedByInfo}${savedFromInfo}\n`
                 }
               } satisfies TextSegment,
               imgSegment
@@ -195,7 +199,11 @@ const getEmojiList = async (
     {
       type: 'text',
       data: {
-        text: `「${name}」(${images.every((i) => i.user_id === 'global') ? '全局, ' : images.every((i) => i.user_id.startsWith('chat-')) ? '群聊, ' : ''}共 ${count !== undefined ? count : images.length} 个, 使用 ${totalUses} 次)${saveInfo ? `\n${saveInfo}` : ''}\n`
+        text:
+          `「${name}」(${images.every((i) => i.user_id === 'global') ? '全局, ' : images.every((i) => i.user_id.startsWith('chat-')) ? '群聊, ' : ''}共 ${count !== undefined ? count : images.length} 个, 使用 ${totalUses} 次)` +
+          (page ? ` (第 ${page} 页, 共 ${Math.ceil(images.length / pageSize)} 页)` : '') +
+          (saveInfo ? `\n${saveInfo}` : '') +
+          `\n`
       }
     },
     ...segments
@@ -950,7 +958,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
                 `${command} {transfer/mv} {group/global} <名称> [序号] - 转移指定名称的 (某个) 个人表情\n` +
                 `${command} enable - 在当前群启用 qmoji (允许所有群成员使用)\n` +
                 `${command} disable - 在当前群禁用 qmoji (仅允许名单中的用户可用)\n` +
-                `${command} <名称> - 列出指定名称的所有表情\n` +
+                `${command} <名称> [页数] - 列出指定名称的所有表情\n` +
                 `保存个人表情：在回复的消息中使用 ${config.prefixes.save[0]}<名称> 进行保存\n` +
                 `保存群聊表情：在回复的消息中使用 ${config.prefixes.groupSave[0]}<名称> 进行保存\n` +
                 `保存全局表情：在回复的消息中使用 ${config.prefixes.globalSave[0]}<名称> 进行保存\n` +
@@ -1452,6 +1460,8 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           return;
         }
         const name = subcommand;
+        const page = Number.parseInt(segments[2] ?? '', 10) || 1;
+        const pageSize = 20;
         const images = await filterImagesByAction(
           getImagesByNameAndUser(
             name,
@@ -1461,26 +1471,35 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           ),
           'read'
         );
-        await send(
-          context,
-          images.length > 0
-            ? {
-                type: 'node',
-                data: {
-                  content: await getEmojiList(
-                    name,
-                    images,
-                    true,
-                    isAdmin && !isGroupChat,
-                    isGroupChat && currentGroupId !== undefined ? currentGroupId : null
-                  )
-                }
-              }
-            : {
-                type: 'text',
-                data: { text: `没有找到名称为“${name}”的表情。` }
-              }
-        );
+        if (!images.length) {
+          await send(context, {
+            type: 'text',
+            data: { text: `没有找到名称为“${name}”的表情。` }
+          });
+          return;
+        }
+        if (page < 1 || (page - 1) * pageSize >= images.length) {
+          await send(context, {
+            type: 'text',
+            data: { text: `页数超出范围。当前共有 ${Math.ceil(images.length / pageSize)} 页。` }
+          });
+          return;
+        }
+        await send(context, {
+          type: 'node',
+          data: {
+            content: await getEmojiList(
+              name,
+              images,
+              true,
+              isAdmin && !isGroupChat,
+              isGroupChat && currentGroupId !== undefined ? currentGroupId : null,
+              images.length,
+              page,
+              pageSize
+            )
+          }
+        });
         return;
       }
       const save = async (userId: string) => {
