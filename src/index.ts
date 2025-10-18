@@ -220,7 +220,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
                 `${command} {transfer/mv} {group/global} <名称> [序号] - 转移指定名称的 (某个) 个人表情\n` +
                 `${command} enable - 在当前群启用 qmoji (允许所有群成员使用)\n` +
                 `${command} disable - 在当前群禁用 qmoji (仅允许名单中的用户可用)\n` +
-                `${command} <名称> - 列出指定名称的所有表情\n` +
+                `${command} <名称> [页数] - 列出指定名称的所有表情\n` +
                 `保存个人表情：在回复的消息中使用 ${config.prefixes.save[0]}<名称> 进行保存\n` +
                 `保存群聊表情：在回复的消息中使用 ${config.prefixes.groupSave[0]}<名称> 进行保存\n` +
                 `保存全局表情：在回复的消息中使用 ${config.prefixes.globalSave[0]}<名称> 进行保存\n` +
