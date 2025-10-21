@@ -691,7 +691,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         }
         const action = args[0] || 'help';
         // Derive the base command dynamically for help text
-        const baseCmd = context?.segments?.[0] || 'qmoji1';
+        const baseCmd = config.prefixes.utils[0] || 'qmoji';
         if (action === 'help') {
           await send(context, {
             type: 'text',
