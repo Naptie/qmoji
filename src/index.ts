@@ -413,7 +413,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         }
       };
 
-      const numericRegexp = /^-?\d+$/;
+      const numericRegexp = /^\d+$/;
 
       const parsePriority = (token?: string) => {
         if (!token) {
