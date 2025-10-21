@@ -690,17 +690,19 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           return;
         }
         const action = args[0] || 'help';
+        // Derive the base command dynamically for help text
+        const baseCmd = context?.segments?.[0] || 'qmoji1';
         if (action === 'help') {
           await send(context, {
             type: 'text',
             data: {
               text:
                 '权限指令：\n' +
-                '· qmoji1 perm [view|list|ls|l] [global|group|personal] [--all] - 查看规则\n' +
-                '· qmoji1 perm status [global|group|personal] - 查看当前权限\n' +
-                '· qmoji1 perm set <范围> <选择器> <权限串> [优先级] - 设置自定义权限\n' +
-                '· qmoji1 perm clear <范围> [选择器] [优先级] [--all] - 移除规则\n' +
-                '· qmoji1 enable/disable <选择器> <动作> <范围> [优先级] - 快速单项开关'
+                `· ${baseCmd} perm [view|list|ls|l] [global|group|personal] [--all] - 查看规则\n` +
+                `· ${baseCmd} perm status [global|group|personal] - 查看当前权限\n` +
+                `· ${baseCmd} perm set <范围> <选择器> <权限串> [优先级] - 设置自定义权限\n` +
+                `· ${baseCmd} perm clear <范围> [选择器] [优先级] [--all] - 移除规则\n` +
+                `· ${baseCmd} enable/disable <选择器> <动作> <范围> [优先级] - 快速单项开关`
             }
           });
           return;
