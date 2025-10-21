@@ -431,9 +431,9 @@ napcat.on('message', async (context: AllHandlers['message']) => {
       const parseScope = (token: string | undefined): PermissionScope | null => {
         if (!token) return null;
         const lower = token.toLowerCase();
-        if (['global', 'g', 'all', 'public'].includes(lower)) return 'global';
-        if (['group', 'c', 'chat', 'channel', 'guild'].includes(lower)) return 'group';
-        if (['personal', 'p', 'user', 'private', 'person', 'self'].includes(lower)) return 'personal';
+        if (['global', 'g', 'all', 'public', '公', '全'].includes(lower)) return 'global';
+        if (['group', 'c', 'chat', 'channel', 'guild', '群'].includes(lower)) return 'group';
+        if (['personal', 'p', 'user', 'private', 'person', 'self', '私', '自'].includes(lower)) return 'personal';
         return null;
       };
 
