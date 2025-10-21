@@ -883,11 +883,11 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             return;
           }
           const extras = [...args.slice(2)];
-          const removeAll = true;
-          // if (extras.length && extras[extras.length - 1] === '--all') {
-          //   removeAll = true;
-          //   extras.pop();
-          // }
+          let removeAll = false;
+          if (extras.length && extras[extras.length - 1] === '--all') {
+            removeAll = true;
+            extras.pop();
+          }
           let priority = 0;
           let priorityProvided = false;
           if (extras.length) {
