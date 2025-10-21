@@ -357,13 +357,10 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         if (!config.enablePolicyAuth) {
           return images;
         }
-        const results: ImageRecord[] = [];
-        for (const image of images) {
-          if (await canAccess(resolveImageTarget(image), action)) {
-            results.push(image);
-          }
-        }
-        return results;
+        const accessResults = await Promise.all(
+          images.map(image => canAccess(resolveImageTarget(image), action))
+        );
+        return images.filter((_, idx) => accessResults[idx]);
       };
 
       const scopeLabels: Record<PermissionScope, string> = {
