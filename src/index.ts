@@ -1020,7 +1020,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
               type: 'text',
               data: {
                 text:
-                  'qmoji1 允许名单\n' +
+                  `${command} 允许名单\n` +
                   `用户：\n${allowlist.users ? (await Promise.all(allowlist.users.map(async (id) => `- ${await getUserName(id)}`))).join('\n') : '无'}\n` +
                   `群聊：\n${allowlist.groups ? (await Promise.all(allowlist.groups.map(async (id) => `- ${await getGroupName(id)}`))).join('\n') : '无'}`
               }
