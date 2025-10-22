@@ -10,13 +10,17 @@ import {
   deleteImageById,
   transferImagesOwnership,
   incrementUseCount,
-  getAllImages
+  getAllImages,
+  getImagesBySavedBy,
+  deleteImagesBySavedBy
 } from './db.js';
 import {
   deleteImage,
   downloadImage,
   allowlist,
   allowlistPath,
+  blocklist,
+  blocklistPath,
   random,
   formatBytes
 } from './utils.js';
@@ -188,6 +192,9 @@ napcat.on('socket.close', () => {
 
 napcat.on('message', async (context: AllHandlers['message']) => {
   try {
+    if (blocklist.users?.includes(context.user_id)) {
+      return;
+    }
     if (
       !allowlist.users?.includes(context.user_id) &&
       (!('group_id' in context) || !allowlist.groups?.includes(context.group_id))
@@ -219,7 +226,9 @@ napcat.on('message', async (context: AllHandlers['message']) => {
                 `${command} {remove/delete/rm} <名称> <序号> - 删除指定名称的某个表情\n` +
                 `${command} {transfer/mv} {group/global} <名称> [序号] - 转移指定名称的 (某个) 个人表情\n` +
                 `${command} enable - 在当前群启用 qmoji (允许所有群成员使用)\n` +
-                `${command} disable - 在当前群禁用 qmoji (仅允许名单中的用户可用)\n` +
+                `${command} disable - 在当前群禁用 qmoji (仅白名单中的用户可用)\n` +
+                `${command} allowlist [add/remove] - 管理白名单 (仅管理员)\n` +
+                `${command} blocklist [add/remove] - 管理黑名单 (仅管理员)\n` +
                 `${command} <名称> [页数] - 列出指定名称的所有表情\n` +
                 `保存个人表情：在回复的消息中使用 ${config.prefixes.save[0]}<名称> 进行保存\n` +
                 `保存群聊表情：在回复的消息中使用 ${config.prefixes.groupSave[0]}<名称> 进行保存\n` +
@@ -235,14 +244,14 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           if (isEnable && exists) {
             await send(context, {
               type: 'text',
-              data: { text: `本群已在允许名单中，无需重复添加。` }
+              data: { text: `本群已在白名单中，无需重复添加。` }
             });
             return;
           }
           if (!isEnable && !exists) {
             await send(context, {
               type: 'text',
-              data: { text: `本群不在允许名单中，无需移除。` }
+              data: { text: `本群不在白名单中，无需移除。` }
             });
             return;
           }
@@ -253,13 +262,13 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             allowlist.groups.push(context.group_id);
             await send(context, {
               type: 'text',
-              data: { text: `已将本群添加到允许名单。` }
+              data: { text: `已将本群添加到白名单。` }
             });
           } else {
             allowlist.groups = allowlist.groups.filter((id) => id !== context.group_id);
             await send(context, {
               type: 'text',
-              data: { text: `已将本群从允许名单中移除。` }
+              data: { text: `已将本群从白名单中移除。` }
             });
           }
           await writeFile(allowlistPath, JSON.stringify(allowlist), 'utf-8');
@@ -273,7 +282,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
               type: 'text',
               data: {
                 text:
-                  'qmoji 允许名单\n' +
+                  'qmoji 白名单\n' +
                   `用户：\n${allowlist.users ? (await Promise.all(allowlist.users.map(async (id) => `- ${await getUserName(id)}`))).join('\n') : '无'}\n` +
                   `群聊：\n${allowlist.groups ? (await Promise.all(allowlist.groups.map(async (id) => `- ${await getGroupName(id)}`))).join('\n') : '无'}`
               }
@@ -312,7 +321,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             if (allowlist.users?.includes(targetId)) {
               await send(context, {
                 type: 'text',
-                data: { text: `用户 ${target} 已在允许名单中。` }
+                data: { text: `用户 ${target} 已在白名单中。` }
               });
               return;
             }
@@ -322,24 +331,115 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             allowlist.users.push(targetId);
             await send(context, {
               type: 'text',
-              data: { text: `已将用户 ${target} 添加到允许名单。` }
+              data: { text: `已将用户 ${target} 添加到白名单。` }
             });
           } else if (operation === 'remove') {
             if (!allowlist.users?.includes(targetId)) {
               await send(context, {
                 type: 'text',
-                data: { text: `用户 ${target} 不在允许名单中。` }
+                data: { text: `用户 ${target} 不在白名单中。` }
               });
               return;
             }
             allowlist.users = allowlist.users.filter((id) => id !== targetId);
             await send(context, {
               type: 'text',
-              data: { text: `已将用户 ${target} 从允许名单中移除。` }
+              data: { text: `已将用户 ${target} 从白名单中移除。` }
             });
           }
           await writeFile(allowlistPath, JSON.stringify(allowlist), 'utf-8');
           console.log(`[qmoji] Updated user allowlist: ${await getUserName(targetId)}`);
+          return;
+        }
+        if (subcommand === 'blocklist' && isAdmin) {
+          const operation = segments[2] || '';
+          if (!operation) {
+            await send(context, {
+              type: 'text',
+              data: {
+                text:
+                  'qmoji 黑名单\n' +
+                  `用户：\n${blocklist.users?.length ? (await Promise.all(blocklist.users.map(async (id) => `- ${await getUserName(id)}`))).join('\n') : '无'}`
+              }
+            });
+            return;
+          }
+          if (operation !== 'add' && operation !== 'remove') {
+            await send(context, {
+              type: 'text',
+              data: {
+                text: `用法：${command} ${subcommand} [add/remove]`
+              }
+            });
+            return;
+          }
+          const mention = context.message.find((m) => m.type === 'at');
+          if (!mention) {
+            await send(context, {
+              type: 'text',
+              data: {
+                text: `请提及需要操作的用户。用法：${command} ${subcommand} ${operation} @用户`
+              }
+            });
+            return;
+          }
+          const targetId = parseInt(mention.data.qq);
+          const target = await getUserName(targetId);
+          if (isNaN(targetId)) {
+            await send(context, {
+              type: 'text',
+              data: { text: `无法识别提及的用户。` }
+            });
+            return;
+          }
+          if (operation === 'add') {
+            if (blocklist.users?.includes(targetId)) {
+              await send(context, {
+                type: 'text',
+                data: { text: `用户 ${target} 已在黑名单中。` }
+              });
+              return;
+            }
+            if (!blocklist.users) {
+              blocklist.users = [];
+            }
+            blocklist.users.push(targetId);
+
+            // Delete all images saved by this user
+            const imagesToDelete = getImagesBySavedBy(targetId.toString());
+            const uniqueFilePaths = new Set<string>();
+            for (const img of imagesToDelete) {
+              uniqueFilePaths.add(img.file_path);
+            }
+            const deletedCount = deleteImagesBySavedBy(targetId.toString());
+
+            // Delete physical files
+            for (const filePath of uniqueFilePaths) {
+              deleteImage(filePath);
+            }
+
+            await send(context, {
+              type: 'text',
+              data: {
+                text: `已将用户 ${target} 添加到黑名单，并删除了该用户保存的 ${deletedCount} 个表情。`
+              }
+            });
+          } else if (operation === 'remove') {
+            if (!blocklist.users?.includes(targetId)) {
+              await send(context, {
+                type: 'text',
+                data: { text: `用户 ${target} 不在黑名单中。` }
+              });
+              return;
+            }
+            blocklist.users = blocklist.users.filter((id) => id !== targetId);
+            await send(context, {
+              type: 'text',
+              data: { text: `已将用户 ${target} 从黑名单中移除。` }
+            });
+          }
+          await writeFile(blocklistPath, JSON.stringify(blocklist), 'utf-8');
+          console.log(`[qmoji] Updated user blocklist: ${await getUserName(targetId)}`);
           return;
         }
         if (subcommand === 'stats' && isAdmin) {

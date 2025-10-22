@@ -7,14 +7,23 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const allowlistPath = resolve(__dirname, '../allowlist.json');
+export const blocklistPath = resolve(__dirname, '../blocklist.json');
 
 if (!fs.existsSync(allowlistPath)) {
   fs.writeFileSync(allowlistPath, JSON.stringify({ users: config.admins }));
 }
 
+if (!fs.existsSync(blocklistPath)) {
+  fs.writeFileSync(blocklistPath, JSON.stringify({ users: [] }));
+}
+
 export const allowlist = JSON.parse(fs.readFileSync(allowlistPath, 'utf-8')) as {
   users?: number[];
   groups?: number[];
+};
+
+export const blocklist = JSON.parse(fs.readFileSync(blocklistPath, 'utf-8')) as {
+  users?: number[];
 };
 
 export const downloadImage = async (

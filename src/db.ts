@@ -126,6 +126,17 @@ export const getAllImages = (): ImageRecord[] => {
   return stmt.all() as ImageRecord[];
 };
 
+export const getImagesBySavedBy = (savedBy: string): ImageRecord[] => {
+  const stmt = db.prepare('SELECT * FROM images WHERE saved_by = ?');
+  return stmt.all(savedBy) as ImageRecord[];
+};
+
+export const deleteImagesBySavedBy = (savedBy: string): number => {
+  const stmt = db.prepare('DELETE FROM images WHERE saved_by = ?');
+  const result = stmt.run(savedBy);
+  return result.changes;
+};
+
 export const closeDb = () => {
   db.close();
 };
