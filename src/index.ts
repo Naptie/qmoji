@@ -33,7 +33,7 @@ const napcat = new NCWebsocket(
   {
     baseUrl: config.napcatWs,
     accessToken: config.napcatToken,
-    throwPromise: true,
+    throwPromise: false,
     reconnection: {
       enable: true,
       attempts: 10,
