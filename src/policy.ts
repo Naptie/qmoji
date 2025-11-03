@@ -318,7 +318,7 @@ export const createPolicyManager = ({
       return [] as PolicyRule[];
     }
 
-    // 保留最新创建的规则
+    // Keep the most recently created rule
     const sorted = matches.sort((a, b) => b.rule.createdAt - a.rule.createdAt);
     const target = removeAll ? sorted : sorted.slice(0, 1);
     const indices = target.map((item) => item.index).sort((a, b) => b - a);
