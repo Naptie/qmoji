@@ -28,6 +28,13 @@ import { readFile, writeFile } from 'fs/promises';
 import { resolve } from 'path';
 import config from '../config.json' with { type: 'json' };
 import { stat } from 'fs/promises';
+import {
+  createPolicyManager,
+  type PolicyRule,
+  type PermissionScope,
+  type PermissionAction,
+  type PolicySelector
+} from './policy.js';
 
 const napcat = new NCWebsocket(
   {
@@ -42,6 +49,59 @@ const napcat = new NCWebsocket(
   },
   false
 );
+
+const defaultPolicyRules: PolicyRule[] = [
+  {
+    id: 'default-global-everyone',
+    scope: 'global',
+    selector: { type: 'everyone' },
+    permissions: { read: true, create: true, remove: false },
+    priority: 0,
+    createdAt: 0
+  },
+  {
+    id: 'default-group-everyone',
+    scope: 'group',
+    selector: { type: 'everyone' },
+    permissions: { read: true, create: true, remove: true },
+    priority: 0,
+    createdAt: 0
+  },
+  {
+    id: 'default-personal-everyone',
+    scope: 'personal',
+    selector: { type: 'everyone' },
+    permissions: { read: true, create: true, remove: true },
+    priority: 0,
+    createdAt: 0
+  }
+];
+
+const policyManager = createPolicyManager({
+  filePath: resolve(process.cwd(), 'policy.json'),
+  defaultRules: defaultPolicyRules
+});
+
+const groupAdminCache = new Map<string, { expires: number; value: boolean }>();
+
+const getGroupAdminStatus = async (userId: number, groupId: number) => {
+  const key = `${groupId}:${userId}`;
+  const cached = groupAdminCache.get(key);
+  const now = Date.now();
+  if (cached && cached.expires > now) {
+    return cached.value;
+  }
+  try {
+    const info = await napcat.get_group_member_info({ group_id: groupId, user_id: userId });
+    const isAdmin = info?.role === 'owner' || info?.role === 'admin';
+    groupAdminCache.set(key, { value: Boolean(isAdmin), expires: now + 60_000 });
+    return Boolean(isAdmin);
+  } catch (err) {
+    console.error('[qmoji] Failed to fetch group member info:', err);
+    groupAdminCache.set(key, { value: false, expires: now + 15_000 });
+    return false;
+  }
+};
 
 // Small generic signallable promise: call `signal()` to resolve the promise.
 const createSignallable = <T>() => {
@@ -192,29 +252,707 @@ napcat.on('socket.close', () => {
 
 napcat.on('message', async (context: AllHandlers['message']) => {
   try {
+    const currentGroupId = 'group_id' in context ? context.group_id : undefined;
+    const isGroupChat = currentGroupId !== undefined;
+
     if (blocklist.users?.includes(context.user_id)) {
       return;
     }
     if (
       !allowlist.users?.includes(context.user_id) &&
-      (!('group_id' in context) || !allowlist.groups?.includes(context.group_id))
+      (currentGroupId === undefined || !allowlist.groups?.includes(currentGroupId))
     ) {
       return;
     }
-    const message = context.message.find((m) => m.type === 'text');
-    if (message) {
-      const text = message.data.text;
-      const segments = text
-        .split(/\s+/)
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean);
-      if (!segments.length) return;
-      const command = segments[0];
-      if ([...command].every((char) => char === command[0])) return;
-      const isAdmin = config.admins?.includes(context.user_id);
-      const isGroupChat = context.message_type === 'group';
+    const rawSegments: string[] = [];
+    for (const segment of context.message) {
+      if (segment.type === 'text') {
+        rawSegments.push(...segment.data.text.split(/\s+/));
+      } else if (segment.type === 'at' && segment.data?.qq) {
+        rawSegments.push(`@${segment.data.qq}`);
+      }
+    }
+    const segments = rawSegments
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    if (!segments.length) {
+      return;
+    }
+
+    const command = segments[0];
+    if (command && [...command].every((char) => char === command[0])) {
+      return;
+    }
+    const isAdmin = config.admins?.includes(context.user_id);
+
+    const mentionUserIds = context.message.reduce<string[]>((ids, segment) => {
+        if (segment.type === 'at' && segment.data?.qq) {
+          ids.push(segment.data.qq);
+        }
+        return ids;
+      }, []);
+
+      const actorContext = {
+        userId: context.user_id,
+        groupId: currentGroupId,
+        isAdmin: Boolean(isAdmin),
+        isAllowlistUser: Boolean(allowlist.users?.includes(context.user_id)),
+        isAllowlistGroup: currentGroupId ? Boolean(allowlist.groups?.includes(currentGroupId)) : false,
+        isGroupAdmin: async (groupId: string) => {
+          const numericId = Number(groupId);
+          if (Number.isNaN(numericId)) {
+            return false;
+          }
+          return await getGroupAdminStatus(context.user_id, numericId);
+        }
+      };
+
+      const buildTarget = (
+        scope: PermissionScope,
+        options: { ownerId?: string; groupId?: string } = {}
+      ) => ({
+        scope,
+        ...(options.ownerId ? { ownerId: options.ownerId } : {}),
+        ...(options.groupId ? { groupId: options.groupId } : {})
+      });
+
+      const resolveImageTarget = (image: ImageRecord) => {
+        if (image.user_id === 'global') {
+          return buildTarget('global');
+        }
+        if (image.user_id.startsWith('chat-')) {
+          return buildTarget('group', { groupId: image.user_id.slice(5) });
+        }
+        return buildTarget('personal', { ownerId: image.user_id });
+      };
+
+      const resolveUserTarget = (userId: string) => {
+        if (userId === 'global') {
+          return buildTarget('global');
+        }
+        if (userId.startsWith('chat-')) {
+          return buildTarget('group', { groupId: userId.slice(5) });
+        }
+        return buildTarget('personal', { ownerId: userId });
+      };
+
+      const canAccess = async (
+        target: ReturnType<typeof buildTarget>,
+        action: PermissionAction
+      ) => {
+        if (!config.enablePolicyAuth) {
+          return true;
+        }
+        return await policyManager.isAllowed(actorContext, target, action);
+      };
+
+      const ensurePermission = async (
+        target: ReturnType<typeof buildTarget>,
+        action: PermissionAction,
+        failureMessage = '无权限执行此操作。'
+      ) => {
+        const allowed = await canAccess(target, action);
+        if (!allowed) {
+          await send(context, {
+            type: 'text',
+            data: { text: failureMessage }
+          });
+        }
+        return allowed;
+      };
+
+      const filterImagesByAction = async (images: ImageRecord[], action: PermissionAction) => {
+        if (!config.enablePolicyAuth) {
+          return images;
+        }
+        const accessResults = await Promise.all(
+          images.map(image => canAccess(resolveImageTarget(image), action))
+        );
+        return images.filter((_, idx) => accessResults[idx]);
+      };
+
+      const scopeLabels: Record<PermissionScope, string> = {
+        global: '全局',
+        group: '群聊',
+        personal: '个人'
+      };
+
+      const actionLabels: Record<PermissionAction, string> = {
+        read: '读取',
+        create: '保存',
+        remove: '删除'
+      };
+
+      const permissionsToIcons = (permissions: Record<PermissionAction, boolean>) =>
+        `${permissions.read ? '✅' : '❌'}读取 ${permissions.create ? '✅' : '❌'}保存 ${permissions.remove ? '✅' : '❌'}删除`;
+
+      const bitsToPermissions = (bits: string) => {
+        if (!/^[01]{3}$/.test(bits)) {
+          return { error: '权限格式须为三个 0/1 组成，依次代表读取/保存/删除。' } as const;
+        }
+        return {
+          permissions: {
+            read: bits[0] === '1',
+            create: bits[1] === '1',
+            remove: bits[2] === '1'
+          }
+        } as const;
+      };
+
+      const describeSelector = (selector: PolicySelector) => {
+        switch (selector.type) {
+          case 'admin':
+            return '管理员';
+          case 'allowlist_user':
+          case 'everyone':
+            return '所有可用用户';
+          case 'group':
+            return selector.value ? `群 ${selector.value}` : '所有群';
+          case 'groupadmin':
+            return selector.value ? `群 ${selector.value} 的群管` : '所有群的群管';
+          case 'group_member':
+            return '群成员';
+          case 'owner':
+            return '拥有者';
+          case 'user':
+            return `用户 ${selector.value}`;
+          default:
+            return selector.type;
+        }
+      };
+
+      const numericRegexp = /^\d+$/;
+
+      const parsePriority = (token?: string) => {
+        if (!token) {
+          return { value: 0, consumed: false } as const;
+        }
+        if (!numericRegexp.test(token)) {
+          return { value: 0, consumed: false } as const;
+        }
+        return { value: parseInt(token, 10), consumed: true } as const;
+      };
+
+      const parseScope = (token: string | undefined): PermissionScope | null => {
+        if (!token) return null;
+        const lower = token.toLowerCase();
+        if (['global', 'g', 'all', 'public', '公', '全'].includes(lower)) return 'global';
+        if (['group', 'c', 'chat', 'channel', 'guild', '群'].includes(lower)) return 'group';
+        if (['personal', 'p', 'user', 'private', 'person', 'self', '私', '自'].includes(lower)) return 'personal';
+        return null;
+      };
+
+      const actionMap: Record<string, PermissionAction> = {
+        read: 'read',
+        view: 'read',
+        r: 'read',
+        v: 'read',
+        create: 'create',
+        save: 'create',
+        write: 'create',
+        c: 'create',
+        w: 'create',
+        s: 'create',
+        remove: 'remove',
+        delete: 'remove',
+        del: 'remove',
+        d: 'remove',
+        rm: 'remove'
+      };
+
+      const parseSelectorToken = (
+        token: string | undefined,
+        scope: PermissionScope,
+        mentionUserList: string[]
+      ): { selector?: PolicySelector; error?: string } => {
+        const ensureGroupValue = (raw?: string) => {
+          let value = raw;
+          if (!value) {
+            if (!currentGroupId) {
+              return { error: '请提供群号，或在群聊中使用该指令。' } as const;
+            }
+            value = currentGroupId.toString();
+          }
+          if (!numericRegexp.test(value)) {
+            return { error: '群号必须为数字。' } as const;
+          }
+          return { value } as const;
+        };
+
+        const ensureUserValue = (raw?: string) => {
+          let value = raw;
+          if (!value && mentionUserList.length) {
+            value = mentionUserList[0];
+          }
+          if (!value) {
+            return { error: '请提供用户 QQ 号，或通过 @ 指定用户。' } as const;
+          }
+          if (!numericRegexp.test(value)) {
+            return { error: '用户 QQ 号必须为数字。' } as const;
+          }
+          return { value } as const;
+        };
+
+        if (!token || token === '-') {
+          if (scope === 'group') {
+            const result = ensureGroupValue();
+            if ('error' in result) return result;
+            return { selector: { type: 'group', value: result.value } };
+          }
+          if (scope === 'personal') {
+            return { selector: { type: 'user', value: context.user_id.toString() } };
+          }
+          return { selector: { type: 'everyone' } };
+        }
+
+        if (token.startsWith('@')) {
+          const possibleId = token.slice(1);
+          if (!possibleId) {
+            return { error: '请提供用户 QQ 号，或通过 @ 指定用户。' };
+          }
+          if (!numericRegexp.test(possibleId)) {
+            return { error: '用户 QQ 号必须为数字。' };
+          }
+          return { selector: { type: 'user', value: possibleId } };
+        }
+
+        const [rawType, rawValue] = token.split(':', 2);
+        let type = rawType.toLowerCase();
+        const value = rawValue;
+
+        if (type === 'group_admin') type = 'groupadmin';
+        if (type === 'groupmember') type = 'group_member';
+
+        switch (type) {
+          case 'allowlist_user':
+          case 'everyone':
+            return { selector: { type: 'everyone' } };
+          case 'admin':
+            return { selector: { type: 'admin' } };
+          case '群':
+          case 'chat':
+          case 'channel':
+          case 'guild':
+          case 'g':
+          case 'group': {
+            const result = ensureGroupValue(value);
+            if ('error' in result) return result;
+            return { selector: { type: 'group', value: result.value } };
+          }
+          case 'groupadmin': {
+            const result = ensureGroupValue(value);
+            if ('error' in result) return result;
+            return { selector: { type: 'groupadmin', value: result.value } };
+          }
+          case 'group_member': {
+            const result = ensureGroupValue(value);
+            if ('error' in result) return result;
+            return { selector: { type: 'group_member', value: result.value } };
+          }
+          case 'owner':
+            return { selector: { type: 'owner' } };
+          case 'u':
+          case 'user': {
+            const result = ensureUserValue(value);
+            if ('error' in result) return result;
+            return { selector: { type: 'user', value: result.value } };
+          }
+          default:
+            return { error: `未知的选择器，可选：group:<群号>、user:<用户QQ号>、group_admin、group_member、owner、everyone` };
+        }
+      };
+
+      const ensureCanModifyPolicies = async (scope: PermissionScope, selector: PolicySelector) => {
+        if (isAdmin) {
+          return true;
+        }
+        if (scope === 'group') {
+          const targetGroupId = selector.value;
+          if (!targetGroupId) {
+            await send(context, {
+              type: 'text',
+              data: { text: '无法确定目标群号，无法修改权限。' }
+            });
+            return false;
+          }
+          if (!currentGroupId || targetGroupId !== currentGroupId.toString()) {
+            await send(context, {
+              type: 'text',
+              data: { text: '只能在目标群内由群主或管理员执行该操作。' }
+            });
+            return false;
+          }
+          const isGroupAdmin = await getGroupAdminStatus(context.user_id, currentGroupId);
+          if (!isGroupAdmin) {
+            await send(context, {
+              type: 'text',
+              data: { text: '需要群主或管理员权限才能修改本群的规则。' }
+            });
+            return false;
+          }
+          return true;
+        }
+        await send(context, {
+          type: 'text',
+          data: { text: '只有全局管理员可以修改该范围的权限。' }
+        });
+        return false;
+      };
+
+      const summarizeRule = (rule: PolicyRule) =>
+        `${describeSelector(rule.selector)}对于${scopeLabels[rule.scope]}：${permissionsToIcons(rule.permissions)} · 优先级 ${rule.priority}`;
+
+      const handlePermissionToggle = async (enable: boolean, args: string[]) => {
+        if (!config.enablePolicyAuth) {
+          await send(context, {
+            type: 'text',
+            data: { text: '当前未启用权限系统。' }
+          });
+          return;
+        }
+        const tokens = [...args];
+        let priorityValue: number | undefined;
+        if (tokens.length) {
+          const maybePriority = tokens[tokens.length - 1];
+          const pr = parsePriority(maybePriority);
+          if (pr.consumed) {
+            priorityValue = pr.value;
+            tokens.pop();
+          }
+        }
+        if (tokens.length < 2) {
+          await send(context, {
+            type: 'text',
+            data: {
+              text:
+                `用法：${command} ${enable ? 'enable' : 'disable'} [selector|-] <action> <scope> [priority]\n` +
+                '示例：qmoji1 enable user:123 view global'
+            }
+          });
+          return;
+        }
+        let selectorToken: string | undefined;
+        if (tokens.length >= 3) {
+          selectorToken = tokens.shift();
+        }
+        const actionToken = tokens.shift();
+        const scopeToken = tokens.shift();
+        if (!actionToken || !scopeToken || tokens.length) {
+          await send(context, {
+            type: 'text',
+            data: { text: '请按照 <选择器> <动作> <范围> [优先级] 的格式提供参数。' }
+          });
+          return;
+        }
+        const action = actionMap[actionToken.toLowerCase()];
+        if (!action) {
+          await send(context, {
+            type: 'text',
+            data: { text: '未知的动作，可选：read/view/v/r、create/write/w/s/save、remove/delete/del/d。' }
+          });
+          return;
+        }
+        const scope = parseScope(scopeToken);
+        if (!scope) {
+          await send(context, {
+            type: 'text',
+            data: { text: '未知的范围，可选：global/g/all、公/全；group/c/chat/群；personal/p/self/私/自。' }
+          });
+          return;
+        }
+        const selectorResult = parseSelectorToken(selectorToken, scope, mentionUserIds);
+        if (selectorResult.error || !selectorResult.selector) {
+          await send(context, {
+            type: 'text',
+            data: { text: selectorResult.error ?? '未能解析目标。' }
+          });
+          return;
+        }
+        const selector = selectorResult.selector;
+        if (!(await ensureCanModifyPolicies(scope, selector))) {
+          return;
+        }
+        const { rule, created } = policyManager.updateSinglePermission(
+          scope,
+          selector,
+          priorityValue,
+          action,
+          enable
+        );
+        await send(context, {
+          type: 'text',
+          data: {
+            text:
+              `${enable ? '已允许' : '已禁止'}${describeSelector(selector)}对${scopeLabels[scope]}的${actionLabels[action]}权限。\n` +
+              `${created ? '新增规则' : '更新规则'}：${permissionsToIcons(rule.permissions)}（优先级 ${rule.priority}）。`
+          }
+        });
+      };
+
+      const handlePermCommand = async (args: string[]) => {
+        if (!config.enablePolicyAuth) {
+          await send(context, {
+            type: 'text',
+            data: { text: '当前未启用权限系统。' }
+          });
+          return;
+        }
+        const action = args[0] || 'help';
+        // Derive the base command dynamically for help text
+        const baseCmd = config.prefixes.utils[0] || 'qmoji';
+        if (action === 'help') {
+          await send(context, {
+            type: 'text',
+            data: {
+              text:
+                '权限指令：\n' +
+                `· ${baseCmd} perm [view|list|ls|l] [global|group|personal] [--all] - 查看规则\n` +
+                `· ${baseCmd} perm status [global|group|personal] - 查看当前权限\n` +
+                `· ${baseCmd} perm set <范围> <选择器> <权限串> [优先级] - 设置自定义权限\n` +
+                `· ${baseCmd} perm clear <范围> [选择器] [优先级] [--all] - 移除规则\n` +
+                `· ${baseCmd} enable/disable <选择器> <动作> <范围> [优先级] - 快速单项开关`
+            }
+          });
+          return;
+        }
+
+        if (action === 'view' || action === 'list' || action === 'ls' || action === 'l') {
+          const tokens = args.slice(1);
+          let filterScope: PermissionScope | null = null;
+          let showDefaults = false;
+          for (const token of tokens) {
+            if (token === '--all') {
+              showDefaults = true;
+              continue;
+            }
+            const scope = parseScope(token);
+            if (scope) {
+              filterScope = scope;
+            }
+          }
+          if (showDefaults && !isAdmin) {
+            showDefaults = false;
+          }
+          const { custom, defaults } = policyManager.listRules();
+          const scopesOrder: PermissionScope[] = ['global', 'group', 'personal'];
+          const lines: string[] = [];
+          for (const scope of scopesOrder) {
+            if (filterScope && scope !== filterScope) continue;
+            const rules = custom.filter((rule) => rule.scope === scope);
+            lines.push(`${scopeLabels[scope]}：`);
+            if (!rules.length) {
+              lines.push(' - 无自定义规则');
+            } else {
+              rules.forEach((rule, idx) => {
+                lines.push(` ${idx + 1}. ${summarizeRule(rule)}`);
+              });
+            }
+            lines.push('');
+          }
+          if (showDefaults) {
+            lines.push('默认规则：');
+            defaults.forEach((rule, idx) => {
+              lines.push(` ${idx + 1}. ${summarizeRule(rule)}`);
+            });
+          }
+          const payload: SendMessageSegment[] = [];
+          for (let i = 0; i < lines.length; i += 50) {
+            const batch = lines.slice(i, i + 50);
+            payload.push({
+              type: 'node',
+              data: { content: [{ type: 'text', data: { text: batch.join('\n') } }] }
+            });
+          }
+          await send(context, ...payload);
+          return;
+        }
+
+        if (action === 'status') {
+          const scopeToken = args[1];
+          const scopes: PermissionScope[] = scopeToken
+            ? (() => {
+                const scope = parseScope(scopeToken);
+                return scope ? [scope] : [];
+              })()
+            : (['global', 'group', 'personal'] as PermissionScope[]);
+          if (!scopes.length) {
+            await send(context, {
+              type: 'text',
+              data: { text: '未知的范围，可选：global/group/personal。' }
+            });
+            return;
+          }
+          const lines = ['你的权限：'];
+          for (const scope of scopes) {
+            if (scope === 'group' && !isGroupChat) {
+              lines.push('群聊：请在群聊中使用该指令查看群聊权限。');
+              continue;
+            }
+            const target =
+              scope === 'global'
+                ? buildTarget('global')
+                : scope === 'group'
+                  ? buildTarget('group', { groupId: currentGroupId!.toString() })
+                  : buildTarget('personal', { ownerId: context.user_id.toString() });
+            const status = {
+              read: await canAccess(target, 'read'),
+              create: await canAccess(target, 'create'),
+              remove: await canAccess(target, 'remove')
+            };
+            lines.push(`${scopeLabels[scope]}：${permissionsToIcons(status)}`);
+          }
+          await send(context, {
+            type: 'text',
+            data: { text: lines.join('\n') }
+          });
+          return;
+        }
+
+
+        if (action === 'set') {
+          if (args.length < 4) {
+            await send(context, {
+              type: 'text',
+              data: { text: '用法：qmoji1 perm set <scope> <selector> <权限串> [priority]' }
+            });
+            return;
+          }
+          const scope = parseScope(args[1]);
+          if (!scope) {
+            await send(context, {
+              type: 'text',
+              data: { text: '未知的范围，可选：global/group/personal。' }
+            });
+            return;
+          }
+          const permsResult = bitsToPermissions(args[3]);
+          if (permsResult.error || !permsResult.permissions) {
+            await send(context, {
+              type: 'text',
+              data: { text: permsResult.error ?? '权限格式不正确。' }
+            });
+            return;
+          }
+          const extras = [...args.slice(4)];
+          let priority = 0;
+          let priorityProvided = false;
+          if (extras.length) {
+            const pr = parsePriority(extras[extras.length - 1]);
+            if (pr.consumed) {
+              priority = pr.value;
+              priorityProvided = true;
+              extras.pop();
+            }
+          }
+          const selectorResult = parseSelectorToken(args[2], scope, mentionUserIds);
+          if (selectorResult.error || !selectorResult.selector) {
+            await send(context, {
+              type: 'text',
+              data: { text: selectorResult.error ?? '未能解析目标。' }
+            });
+            return;
+          }
+          const selector = selectorResult.selector;
+          if (!(await ensureCanModifyPolicies(scope, selector))) {
+            return;
+          }
+          const { rule, created } = policyManager.setRulePermissions(
+            scope,
+            selector,
+            priorityProvided ? priority : undefined,
+            permsResult.permissions
+          );
+          await send(context, {
+            type: 'text',
+            data: {
+              text:
+                `${created ? '已新增规则' : '已更新规则'}：${summarizeRule(rule)}\n` +
+                `新的权限：${permissionsToIcons(rule.permissions)}（优先级 ${rule.priority}）。`
+            }
+          });
+          return;
+        }
+
+        if (action === 'clear') {
+          if (args.length < 2) {
+            await send(context, {
+              type: 'text',
+              data: { text: '用法：qmoji1 perm clear <scope> [selector] [priority]' }
+            });
+            return;
+          }
+          const scope = parseScope(args[1]);
+          if (!scope) {
+            await send(context, {
+              type: 'text',
+              data: { text: '未知的范围，可选：global/group/personal。' }
+            });
+            return;
+          }
+          const extras = [...args.slice(2)];
+          let removeAll = false;
+          if (extras.length && extras[extras.length - 1] === '--all') {
+            removeAll = true;
+            extras.pop();
+          }
+          let priority = 0;
+          let priorityProvided = false;
+          if (extras.length) {
+            const pr = parsePriority(extras[extras.length - 1]);
+            if (pr.consumed) {
+              priority = pr.value;
+              priorityProvided = true;
+              extras.pop();
+            }
+          }
+          const selectorResult = parseSelectorToken(extras[0], scope, mentionUserIds);
+          if (selectorResult.error || !selectorResult.selector) {
+            await send(context, {
+              type: 'text',
+              data: { text: selectorResult.error ?? '未能解析目标。' }
+            });
+            return;
+          }
+          const selector = selectorResult.selector;
+          if (!(await ensureCanModifyPolicies(scope, selector))) {
+            return;
+          }
+          const removed = policyManager.removeRules(
+            scope,
+            selector,
+            priorityProvided ? priority : undefined,
+            removeAll
+          );
+          if (!removed.length) {
+            await send(context, {
+              type: 'text',
+              data: { text: '未找到匹配的自定义规则。' }
+            });
+            return;
+          }
+          const lines = removed.map((rule, idx) => `${idx + 1}. ${summarizeRule(rule)}`);
+          await send(context, {
+            type: 'text',
+            data: {
+              text:
+                `已移除 ${removed.length} 条规则：\n` +
+                lines.join('\n')
+            }
+          });
+          return;
+        }
+
+        await send(context, {
+          type: 'text',
+          data: { text: '未知的 perm 子命令，可使用 qmoji1 perm help 查看帮助。' }
+        });
+      };
       if (config.prefixes.utils.includes(command)) {
         const subcommand = segments[1] || '';
+        if (subcommand === 'perm') {
+          await handlePermCommand(segments.slice(2));
+          return;
+        }
         if (!subcommand) {
           await send(context, {
             type: 'text',
@@ -238,9 +976,21 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           });
           return;
         }
-        if ((subcommand === 'enable' || subcommand === 'disable') && isGroupChat) {
+        if (subcommand === 'enable' || subcommand === 'disable') {
+          const argsForToggle = segments.slice(2);
+          if (argsForToggle.length) {
+            await handlePermissionToggle(subcommand === 'enable', argsForToggle);
+            return;
+          }
+          if (!isGroupChat || currentGroupId === undefined) {
+            await send(context, {
+              type: 'text',
+              data: { text: '仅能在群聊中使用该命令以调整群允许名单。' }
+            });
+            return;
+          }
           const isEnable = subcommand === 'enable';
-          const exists = allowlist.groups?.includes(context.group_id);
+          const exists = allowlist.groups?.includes(currentGroupId);
           if (isEnable && exists) {
             await send(context, {
               type: 'text',
@@ -259,20 +1009,20 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             allowlist.groups = [];
           }
           if (isEnable) {
-            allowlist.groups.push(context.group_id);
+            allowlist.groups.push(currentGroupId);
             await send(context, {
               type: 'text',
               data: { text: `已将本群添加到白名单。` }
             });
           } else {
-            allowlist.groups = allowlist.groups.filter((id) => id !== context.group_id);
+            allowlist.groups = allowlist.groups.filter((id) => id !== currentGroupId);
             await send(context, {
               type: 'text',
               data: { text: `已将本群从白名单中移除。` }
             });
           }
           await writeFile(allowlistPath, JSON.stringify(allowlist), 'utf-8');
-          console.log(`[qmoji] Updated group allowlist: ${await getGroupName(context.group_id)}`);
+          console.log(`[qmoji] Updated group allowlist: ${await getGroupName(currentGroupId)}`);
           return;
         }
         if (subcommand === 'allowlist' && isAdmin) {
@@ -282,7 +1032,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
               type: 'text',
               data: {
                 text:
-                  'qmoji 白名单\n' +
+                  `${command} 允许名单\n` +
                   `用户：\n${allowlist.users ? (await Promise.all(allowlist.users.map(async (id) => `- ${await getUserName(id)}`))).join('\n') : '无'}\n` +
                   `群聊：\n${allowlist.groups ? (await Promise.all(allowlist.groups.map(async (id) => `- ${await getGroupName(id)}`))).join('\n') : '无'}`
               }
@@ -533,17 +1283,46 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           const page = parseInt(segments[2]) || 1;
           const scope =
             segments[3] || (!segments[2] || parseInt(segments[2]) ? 'pcg' : segments[2]);
-          const fetchPersonal = scope.includes('p') || scope.includes('私') || scope.includes('自');
-          const fetchGroup = scope.includes('c') || scope.includes('群');
-          const fetchGlobal = scope.includes('g') || scope.includes('公') || scope.includes('全');
-          const images =
+          const normalizedScope = scope.toLowerCase();
+          const letterMode = /^[pcg/]+$/.test(normalizedScope);
+          const letterFlags = letterMode
+            ? new Set(normalizedScope.replace(/\//g, '').split(''))
+            : new Set<string>();
+          const scopeWords = scope
+            .toLowerCase()
+            .replace(/[/,]+/g, ' ')
+            .split(/\s+/)
+            .filter(Boolean);
+          const includesFlag = (letters: string[], words: string[], chars: string[]) =>
+            (letterMode && letters.some((l) => letterFlags.has(l))) ||
+            scopeWords.some((word) => words.includes(word)) ||
+            chars.some((char) => scope.includes(char));
+          const fetchPersonal = includesFlag(
+            ['p'],
+            ['p', 'personal', 'person', 'private', 'self', 'user'],
+            ['私', '自']
+          );
+          const fetchGroup = includesFlag(
+            ['c'],
+            ['c', 'group', 'chat', 'channel', 'guild'],
+            ['群']
+          );
+          const fetchGlobal = includesFlag(
+            ['g'],
+            ['g', 'global', 'all', 'public'],
+            ['公', '全']
+          );
+          const rawImages =
             subcommand === 'list'
               ? getImagesByUser(
                   fetchPersonal ? context.user_id.toString() : null,
-                  isGroupChat && fetchGroup ? context.group_id.toString() : null,
+                  isGroupChat && fetchGroup && currentGroupId !== undefined
+                    ? currentGroupId.toString()
+                    : null,
                   fetchGlobal
                 )
               : getAllImages();
+          const images = await filterImagesByAction(rawImages, 'read');
           if (images.length === 0) {
             await send(context, {
               type: 'text',
@@ -589,7 +1368,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
                           [random(images)],
                           false,
                           isAdmin && !isGroupChat,
-                          isGroupChat ? context.group_id : null,
+                          isGroupChat && currentGroupId !== undefined ? currentGroupId : null,
                           images.length
                         )
                       )
@@ -609,6 +1388,10 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             });
             return;
           }
+          const targetForClear = resolveUserTarget(userId);
+          if (!(await ensurePermission(targetForClear, 'remove', '无权限清除该层级的表情。'))) {
+            return;
+          }
           const images = getImagesByNameAndUser(name, userId);
           const deletedCount = clearImagesByNameAndUserId(name, userId);
           if (deletedCount > 0) {
@@ -626,7 +1409,14 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           return;
         }
         if ((subcommand === 'cleargroup' || subcommand === 'cgr') && isGroupChat) {
-          await clear(`chat-${context.group_id}`);
+          if (currentGroupId === undefined) {
+            await send(context, {
+              type: 'text',
+              data: { text: '无法识别当前群号，无法清除群聊表情。' }
+            });
+            return;
+          }
+          await clear(`chat-${currentGroupId}`);
           return;
         }
         if ((subcommand === 'clearglobal' || subcommand === 'cgl') && isAdmin) {
@@ -653,7 +1443,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           const images = getImagesByNameAndUser(
             name,
             context.user_id.toString(),
-            isGroupChat ? context.group_id.toString() : null,
+            isGroupChat && currentGroupId !== undefined ? currentGroupId.toString() : null,
             isAdmin
           );
           if (images.length === 0) {
@@ -671,6 +1461,9 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             return;
           }
           const imageToDelete = images[index - 1];
+          if (!(await ensurePermission(resolveImageTarget(imageToDelete), 'remove', '无权限删除该表情。'))) {
+            return;
+          }
           const success = deleteImageById(imageToDelete.id);
           if (success) {
             deleteEmoji(context, imageToDelete);
@@ -717,6 +1510,11 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             return;
           }
           const imagesToTransfer = index !== undefined ? [images[index - 1]] : images;
+          for (const image of imagesToTransfer) {
+            if (!(await ensurePermission(resolveImageTarget(image), 'remove', '无权限转移该表情。'))) {
+              return;
+            }
+          }
           let newUserId: string;
           if (target === 'global') {
             newUserId = 'global';
@@ -728,7 +1526,14 @@ napcat.on('message', async (context: AllHandlers['message']) => {
               });
               return;
             }
-            newUserId = `chat-${context.group_id}`;
+            if (currentGroupId === undefined) {
+              await send(context, {
+                type: 'text',
+                data: { text: `无法识别当前群号，请稍后再试。` }
+              });
+              return;
+            }
+            newUserId = `chat-${currentGroupId}`;
           } else {
             await send(context, {
               type: 'text',
@@ -736,6 +1541,10 @@ napcat.on('message', async (context: AllHandlers['message']) => {
                 text: `请指定目标层级（group 或 global）。用法：${command} ${subcommand} {group/global} <名称> [序号]`
               }
             });
+            return;
+          }
+          const targetForTransfer = resolveUserTarget(newUserId);
+          if (!(await ensurePermission(targetForTransfer, 'create', '无权限保存到目标层级。'))) {
             return;
           }
           const transferredCount = transferImagesOwnership(
@@ -751,14 +1560,24 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           return;
         }
         const name = subcommand;
-        const page = parseInt(segments[2]) || 1;
+        const page = Number.parseInt(segments[2] ?? '', 10) || 1;
         const pageSize = 20;
-        const images = getImagesByNameAndUser(
-          name,
-          context.user_id.toString(),
-          isGroupChat ? context.group_id.toString() : null,
-          true
+        const images = await filterImagesByAction(
+          getImagesByNameAndUser(
+            name,
+            context.user_id.toString(),
+            isGroupChat && currentGroupId !== undefined ? currentGroupId.toString() : null,
+            true
+          ),
+          'read'
         );
+        if (!images.length) {
+          await send(context, {
+            type: 'text',
+            data: { text: `没有找到名称为“${name}”的表情。` }
+          });
+          return;
+        }
         if (page < 1 || (page - 1) * pageSize >= images.length) {
           await send(context, {
             type: 'text',
@@ -766,34 +1585,30 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           });
           return;
         }
-        await send(
-          context,
-          images.length > 0
-            ? {
-                type: 'node',
-                data: {
-                  content: await getEmojiList(
-                    name,
-                    images,
-                    true,
-                    isAdmin && !isGroupChat,
-                    isGroupChat ? context.group_id : null,
-                    images.length,
-                    page,
-                    pageSize
-                  )
-                }
-              }
-            : {
-                type: 'text',
-                data: { text: `没有找到名称为“${name}”的表情。` }
-              }
-        );
+        await send(context, {
+          type: 'node',
+          data: {
+            content: await getEmojiList(
+              name,
+              images,
+              true,
+              isAdmin && !isGroupChat,
+              isGroupChat && currentGroupId !== undefined ? currentGroupId : null,
+              images.length,
+              page,
+              pageSize
+            )
+          }
+        });
         return;
       }
       const save = async (userId: string) => {
         const name = command.slice(1);
         if (!name) {
+          return;
+        }
+        const targetForSave = resolveUserTarget(userId);
+        if (!(await ensurePermission(targetForSave, 'create', '无权限保存到该层级。'))) {
           return;
         }
         const images = [
@@ -814,15 +1629,17 @@ napcat.on('message', async (context: AllHandlers['message']) => {
 
         try {
           const savedBy = context.user_id.toString();
-          const savedFrom = isGroupChat ? context.group_id.toString() : null;
+          const savedFrom = isGroupChat && currentGroupId !== undefined ? currentGroupId.toString() : null;
 
-          images.map(async (image) => {
-            const filePath = await downloadImage(image.url, userId, image.file);
-            insertImage(name, filePath, userId, savedBy, savedFrom);
-            console.log(
-              `[qmoji] User: ${userId}, Name: ${name}, Path: ${filePath}, SavedBy: ${savedBy}, SavedFrom: ${savedFrom || 'private'}`
-            );
-          });
+          await Promise.all(
+            images.map(async (image) => {
+              const filePath = await downloadImage(image.url, userId, image.file);
+              insertImage(name, filePath, userId, savedBy, savedFrom);
+              console.log(
+                `[qmoji] User: ${userId}, Name: ${name}, Path: ${filePath}, SavedBy: ${savedBy}, SavedFrom: ${savedFrom || 'private'}`
+              );
+            })
+          );
 
           if (isGroupChat) {
             await napcat.set_msg_emoji_like({
@@ -847,7 +1664,14 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         await save('global');
       }
       if (config.prefixes.groupSave.includes(command[0]) && isGroupChat) {
-        await save(`chat-${context.group_id}`);
+        if (currentGroupId === undefined) {
+          await send(context, {
+            type: 'text',
+            data: { text: '无法识别当前群号，保存失败。' }
+          });
+        } else {
+          await save(`chat-${currentGroupId}`);
+        }
       }
       if (config.prefixes.save.includes(command[0])) {
         await save(context.user_id.toString());
@@ -857,11 +1681,14 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         if (!name) {
           return;
         }
-        const images = getImagesByNameAndUser(
-          name,
-          context.user_id.toString(),
-          isGroupChat ? context.group_id.toString() : null,
-          true
+        const images = await filterImagesByAction(
+          getImagesByNameAndUser(
+            name,
+            context.user_id.toString(),
+            isGroupChat && currentGroupId !== undefined ? currentGroupId.toString() : null,
+            true
+          ),
+          'read'
         );
         if (images.length === 0) {
           if (config.reactOnNotFound) {
@@ -883,7 +1710,6 @@ napcat.on('message', async (context: AllHandlers['message']) => {
         incrementUseCount(selectedImage.id);
         await send(context, await getEmoji(selectedImage, true));
       }
-    }
   } catch (err) {
     console.error('[qmoji] Error handling message:', err);
   }
