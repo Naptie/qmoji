@@ -122,8 +122,19 @@ export const getImagesByNameAndUser = (
 };
 
 export const getAllImages = (): ImageRecord[] => {
-  const stmt = db.prepare('SELECT * FROM images ORDER BY user_id ASC, created_at DESC');
+  const stmt = db.prepare('SELECT * FROM images ORDER BY created_at DESC');
   return stmt.all() as ImageRecord[];
+};
+
+export const getImagesBySavedBy = (savedBy: string): ImageRecord[] => {
+  const stmt = db.prepare('SELECT * FROM images WHERE saved_by = ?');
+  return stmt.all(savedBy) as ImageRecord[];
+};
+
+export const deleteImagesBySavedBy = (savedBy: string): number => {
+  const stmt = db.prepare('DELETE FROM images WHERE saved_by = ?');
+  const result = stmt.run(savedBy);
+  return result.changes;
 };
 
 export const closeDb = () => {
