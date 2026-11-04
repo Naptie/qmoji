@@ -8,11 +8,12 @@ import {
   type ImageRecord,
   clearImagesByNameAndUserId,
   deleteImageById,
-  transferImagesOwnership,
   incrementUseCount,
   getAllImages,
   getImagesBySavedBy,
-  deleteImagesBySavedBy
+  deleteImagesBySavedBy,
+  countImagesByFilePath,
+  updateImageScope
 } from './db.js';
 import {
   deleteImage,
@@ -22,12 +23,63 @@ import {
   blocklist,
   blocklistPath,
   random,
-  formatBytes
+  formatBytes,
+  resolveDataPath,
+  safeFileName,
+  writeJsonAtomic,
+  moveDataFile,
+  copyDataFile
 } from './utils.js';
-import { readFile, writeFile } from 'fs/promises';
-import { resolve } from 'path';
+import { readFile } from 'fs/promises';
 import config from '../config.json' with { type: 'json' };
 import { stat } from 'fs/promises';
+
+/**
+ * How many images are encoded into a single outgoing message, and how many
+ * files are read (and base64 encoded) at the same time.
+ *
+ * A single emoji can be tens of megabytes, and base64 encoding adds another
+ * 33%. Reading every image of a page concurrently therefore used to peak far
+ * above the service's MemoryMax and got the process OOM killed. Both numbers
+ * are deliberately small: the chunks are still sent as a handful of messages,
+ * but the resident set stays bounded.
+ */
+const EMOJI_CHUNK_SIZE = 5;
+const EMOJI_CONCURRENCY = 3;
+
+/**
+ * Run `fn` over `items` with at most `limit` calls in flight, preserving
+ * result order.
+ */
+const mapWithConcurrency = async <T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> => {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await fn(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+};
+
+/**
+ * Never let a stray rejection take the whole process down.
+ *
+ * Node's default for an unhandled rejection is to terminate the process, and
+ * the service runs with `Restart=on-failure` — so a single failed promise
+ * anywhere turned into a restart loop. Logging and continuing keeps the bot
+ * alive; the individual failure is still visible in the journal.
+ */
+process.on('unhandledRejection', (reason) => {
+  console.error('[qmoji] Unhandled rejection:', reason);
+});
 
 const napcat = new NCWebsocket(
   {
@@ -77,9 +129,10 @@ const getGroupName = async (id: number) => {
 
 const getEmoji = async (image: ImageRecord, showName = false) => {
   try {
-    const fullPath = resolve(process.cwd(), image.file_path);
-    const buffer = await readFile(fullPath);
-    const base64 = buffer.toString('base64');
+    const fullPath = resolveDataPath(image.file_path);
+    // Encode straight into the string so the raw Buffer is not kept alive by a
+    // local binding for the rest of the function.
+    const base64 = (await readFile(fullPath)).toString('base64');
     return {
       type: 'image',
       data: {
@@ -103,66 +156,79 @@ const getEmojiList = async (
   showIndex = false,
   showSensitiveSaveInfo = false,
   groupId: number | null = null,
-  count?: number,
-  page?: number,
-  pageSize = 20
+  totalCount?: number,
+  showHeader = true,
+  indexOffset = 0
 ): Promise<SendMessageSegment[]> => {
   const totalUses = images.reduce((sum, img) => sum + img.use_count, 0);
   let saveInfo = '';
-  const imagesToShow =
-    page !== undefined ? images.slice((page - 1) * pageSize, page * pageSize) : images;
+  // `images` is exactly the set to render — the caller slices, so the same
+  // image is never encoded twice and the caller stays in control of paging.
   const segments = (
-    await Promise.all(
-      imagesToShow.map(async (img, i) => {
-        const imgSegment = await getEmoji(img);
-        const ownershipLabel =
-          img.user_id === 'global' ? ' (全局)' : img.user_id.startsWith('chat-') ? ' (群聊)' : '';
-        const useCountInfo = ` (${img.use_count} 次)`;
-        const savedById = parseInt(img.saved_by);
-        const savedFromId = img.saved_from ? parseInt(img.saved_from) : null;
-        const savedByInfo =
-          (savedFromId === groupId || showSensitiveSaveInfo) && !isNaN(savedById)
-            ? ` - 由 ${await getUserName(savedById)} 保存`
-            : '';
-        const savedFromInfo =
-          savedFromId !== groupId && showSensitiveSaveInfo && savedFromId
-            ? `于群 ${await getGroupName(savedFromId)}`
-            : '';
-        if (i === 0) saveInfo = `${savedByInfo}${savedFromInfo}`;
+    await mapWithConcurrency(images, EMOJI_CONCURRENCY, async (img, i) => {
+      const imgSegment = await getEmoji(img);
+      const ownershipLabel =
+        img.user_id === 'global' ? ' (全局)' : img.user_id.startsWith('chat-') ? ' (群聊)' : '';
+      const useCountInfo = ` (${img.use_count} 次)`;
+      const savedById = parseInt(img.saved_by);
+      const savedFromId = img.saved_from ? parseInt(img.saved_from) : null;
+      const savedByInfo =
+        (savedFromId === groupId || showSensitiveSaveInfo) && !isNaN(savedById)
+          ? ` - 由 ${await getUserName(savedById)} 保存`
+          : '';
+      const savedFromInfo =
+        savedFromId !== groupId && showSensitiveSaveInfo && savedFromId
+          ? `于群 ${await getGroupName(savedFromId)}`
+          : '';
+      if (i === 0) saveInfo = `${savedByInfo}${savedFromInfo}`;
 
-        return showIndex
-          ? [
-              {
-                type: 'text',
-                data: {
-                  text: `${(page ? (page - 1) * pageSize : 0) + i + 1}.${ownershipLabel}${useCountInfo}${savedByInfo}${savedFromInfo}\n`
-                }
-              } satisfies TextSegment,
-              imgSegment
-            ]
-          : [imgSegment];
-      })
-    )
+      return showIndex
+        ? [
+            {
+              type: 'text',
+              data: {
+                text: `${indexOffset + i + 1}.${ownershipLabel}${useCountInfo}${savedByInfo}${savedFromInfo}\n`
+              }
+            } satisfies TextSegment,
+            imgSegment
+          ]
+        : [imgSegment];
+    })
   ).flat();
 
   return [
-    {
-      type: 'text',
-      data: {
-        text:
-          `「${name}」(${images.every((i) => i.user_id === 'global') ? '全局, ' : images.every((i) => i.user_id.startsWith('chat-')) ? '群聊, ' : ''}共 ${count !== undefined ? count : images.length} 个, 使用 ${totalUses} 次)` +
-          (page ? ` (第 ${page} 页, 共 ${Math.ceil(images.length / pageSize)} 页)` : '') +
-          (saveInfo ? `\n${saveInfo}` : '') +
-          `\n`
-      }
-    },
+    ...(showHeader
+      ? [
+          {
+            type: 'text',
+            data: {
+              text:
+                `「${name}」(${images.every((i) => i.user_id === 'global') ? '全局, ' : images.every((i) => i.user_id.startsWith('chat-')) ? '群聊, ' : ''}共 ${totalCount ?? images.length} 个, 使用 ${totalUses} 次)` +
+                (saveInfo ? `\n${saveInfo}` : '') +
+                `\n`
+            }
+          } satisfies TextSegment
+        ]
+      : []),
     ...segments
   ];
 };
 
-const deleteEmoji = (context: AllHandlers['message'], image: ImageRecord) => {
-  const userImages = getImagesByUser(context.user_id.toString());
-  if (!userImages.find((img) => img.file_path === image.file_path)) {
+/**
+ * Unlink an emoji file, but only once the LAST row pointing at it is gone.
+ *
+ * A file can legitimately be shared by several rows: QQ content-addresses
+ * image file names, so saving the same image under two names (or by two
+ * users into the same scope) produces two rows for one file. Deleting the
+ * file while another row still references it would leave that row pointing at
+ * a file that no longer exists.
+ *
+ * The check is deliberately scope-agnostic. Asking "does *my* scope still
+ * reference this file?" is the wrong question — it missed group-scoped rows
+ * and silently produced dead rows.
+ */
+const deleteEmoji = (image: ImageRecord) => {
+  if (countImagesByFilePath(image.file_path) === 0) {
     deleteImage(image.file_path);
   }
 };
@@ -198,13 +264,15 @@ napcat.on('socket.close', () => {
 
 napcat.on('socket.error', (context) => {
   if (context.error_type === 'response_error') {
-    console.error(`[NapCat] NapCat rejected a request: ${context.info.message} (errno ${context.info.errno})`);
+    console.error(
+      `[NapCat] NapCat rejected a request: ${context.info.message} (errno ${context.info.errno})`
+    );
     return;
   }
   console.error('[NapCat] WebSocket connection error, reconnecting...');
 });
 
-napcat.on('message', async (context: AllHandlers['message']) => {
+const handleMessage = async (context: AllHandlers['message']) => {
   try {
     if (blocklist.users?.includes(context.user_id)) {
       return;
@@ -285,7 +353,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
               data: { text: `已将本群从白名单中移除。` }
             });
           }
-          await writeFile(allowlistPath, JSON.stringify(allowlist), 'utf-8');
+          await writeJsonAtomic(allowlistPath, allowlist);
           console.log(`[qmoji] Updated group allowlist: ${await getGroupName(context.group_id)}`);
           return;
         }
@@ -361,7 +429,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
               data: { text: `已将用户 ${target} 从白名单中移除。` }
             });
           }
-          await writeFile(allowlistPath, JSON.stringify(allowlist), 'utf-8');
+          await writeJsonAtomic(allowlistPath, allowlist);
           console.log(`[qmoji] Updated user allowlist: ${await getUserName(targetId)}`);
           return;
         }
@@ -427,9 +495,14 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             }
             const deletedCount = deleteImagesBySavedBy(targetId.toString());
 
-            // Delete physical files
+            // Delete physical files — but only the ones that are no longer
+            // referenced by any surviving row. A file can be shared between
+            // rows, so unlinking it unconditionally would leave the other
+            // rows pointing at a missing file.
             for (const filePath of uniqueFilePaths) {
-              deleteImage(filePath);
+              if (countImagesByFilePath(filePath) === 0) {
+                deleteImage(filePath);
+              }
             }
 
             await send(context, {
@@ -452,7 +525,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
               data: { text: `已将用户 ${target} 从黑名单中移除。` }
             });
           }
-          await writeFile(blocklistPath, JSON.stringify(blocklist), 'utf-8');
+          await writeJsonAtomic(blocklistPath, blocklist);
           console.log(`[qmoji] Updated user blocklist: ${await getUserName(targetId)}`);
           return;
         }
@@ -461,19 +534,34 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             string,
             { userId: string; count: number; totalUses: number; totalSize: number }
           >();
-          const results = await Promise.all(
-            getAllImages().map(async (img) => {
-              try {
-                const fullPath = resolve(process.cwd(), img.file_path);
-                const fileStats = await stat(fullPath);
-                const size = fileStats.size;
-                return { userId: img.user_id, useCount: img.use_count, size };
-              } catch (err) {
-                console.error(`[qmoji] Failed to stat image ${img.file_path}:`, err);
-                return { userId: img.user_id, useCount: img.use_count, size: 0 };
-              }
-            })
-          );
+          // A file can be shared by several rows, so every distinct file is
+          // sized only once and its size is attributed to the scope of the
+          // first row that references it. Statting every row inflated the
+          // totals and opened thousands of descriptors at the same time.
+          const allImages = getAllImages();
+          const sizeByPath = new Map<string, number>();
+          await mapWithConcurrency(allImages, EMOJI_CONCURRENCY * 4, async (img) => {
+            if (sizeByPath.has(img.file_path)) {
+              return;
+            }
+            try {
+              sizeByPath.set(img.file_path, (await stat(resolveDataPath(img.file_path))).size);
+            } catch (err) {
+              console.error(`[qmoji] Failed to stat image ${img.file_path}:`, err);
+              sizeByPath.set(img.file_path, 0);
+            }
+          });
+
+          const countedPaths = new Set<string>();
+          const results = allImages.map((img) => {
+            const firstSeen = !countedPaths.has(img.file_path);
+            countedPaths.add(img.file_path);
+            return {
+              userId: img.user_id,
+              useCount: img.use_count,
+              size: firstSeen ? (sizeByPath.get(img.file_path) ?? 0) : 0
+            };
+          });
           for (const { userId, useCount, size } of results) {
             if (!statsMap.has(userId)) {
               statsMap.set(userId, {
@@ -565,54 +653,57 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             });
             return;
           }
-          const groups = images.reduce(
-            (acc, img) => {
-              if (!acc[`${img.name}-${img.user_id}`]) {
-                acc[`${img.name}-${img.user_id}`] = [];
-              }
-              acc[`${img.name}-${img.user_id}`].push(img);
-              return acc;
-            },
-            {} as Record<string, typeof images>
-          );
-          const groupEntries = Object.entries(groups);
-          if (page < 1 || (page - 1) * 50 >= groupEntries.length) {
+          // Group by (name, scope). The name is kept as its own field: it used
+          // to be recovered by splitting a `${name}-${user_id}` key on '-',
+          // which mangled every name that contains a hyphen ("npt-lunch" was
+          // displayed as "npt").
+          const groups = new Map<string, { name: string; userId: string; images: ImageRecord[] }>();
+          for (const img of images) {
+            const key = `${img.name}\u0000${img.user_id}`;
+            const group = groups.get(key);
+            if (group) {
+              group.images.push(img);
+            } else {
+              groups.set(key, { name: img.name, userId: img.user_id, images: [img] });
+            }
+          }
+          const groupEntries = [...groups.values()];
+          const listPageSize = 50;
+          if (page < 1 || (page - 1) * listPageSize >= groupEntries.length) {
             await send(context, {
               type: 'text',
-              data: { text: `页数超出范围。当前共有 ${Math.ceil(groupEntries.length / 50)} 页。` }
+              data: {
+                text: `页码超出范围。当前共有 ${Math.ceil(groupEntries.length / listPageSize)} 页。`
+              }
             });
             return;
           }
+          const pageEntries = groupEntries.slice((page - 1) * listPageSize, page * listPageSize);
           await send(context, {
-            type: 'node',
+            type: 'text',
             data: {
-              content: [
-                {
-                  type: 'text',
-                  data: {
-                    text: `已保存的表情列表 (${groupEntries.length}) (第 ${page} 页，共 ${Math.ceil(groupEntries.length / 50)} 页)\n`
-                  }
-                },
-                ...(
-                  await Promise.all(
-                    groupEntries
-                      .slice((page - 1) * 50, page * 50)
-                      .map(([id, images]) =>
-                        getEmojiList(
-                          id.split('-')[0],
-                          [random(images)],
-                          false,
-                          isAdmin && !isGroupChat,
-                          isGroupChat ? context.group_id : null,
-                          images.length
-                        )
-                      )
-                  )
-                ).flat()
-              ]
+              text: `已保存的表情列表 (${groupEntries.length}) (第 ${page} 页，共 ${Math.ceil(groupEntries.length / listPageSize)} 页)\n`
             }
           });
-          return;
+          // Send the images in small chunks. Encoding a whole page at once used
+          // to peak far above the service's memory limit and got the process
+          // OOM killed.
+          for (let i = 0; i < pageEntries.length; i += EMOJI_CHUNK_SIZE) {
+            const chunk = pageEntries.slice(i, i + EMOJI_CHUNK_SIZE);
+            const chunkSegments = (
+              await mapWithConcurrency(chunk, EMOJI_CONCURRENCY, async (group) =>
+                getEmojiList(
+                  group.name,
+                  [random(group.images)],
+                  false,
+                  isAdmin && !isGroupChat,
+                  isGroupChat ? context.group_id : null,
+                  group.images.length
+                )
+              )
+            ).flat();
+            await send(context, { type: 'node', data: { content: chunkSegments } });
+          }
         }
         const clear = async (userId: string) => {
           const name = segments[2];
@@ -627,7 +718,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           const deletedCount = clearImagesByNameAndUserId(name, userId);
           if (deletedCount > 0) {
             images.forEach((img) => {
-              deleteEmoji(context, img);
+              deleteEmoji(img);
             });
           }
           await send(context, {
@@ -687,7 +778,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           const imageToDelete = images[index - 1];
           const success = deleteImageById(imageToDelete.id);
           if (success) {
-            deleteEmoji(context, imageToDelete);
+            deleteEmoji(imageToDelete);
             await send(context, {
               type: 'text',
               data: { text: `成功删除名称为“${name}”的第 ${index} 个表情。` }
@@ -752,10 +843,32 @@ napcat.on('message', async (context: AllHandlers['message']) => {
             });
             return;
           }
-          const transferredCount = transferImagesOwnership(
-            imagesToTransfer.map((img) => img.id),
-            newUserId
-          );
+          // Move the files as well as the rows. Changing only `user_id` left
+          // the file sitting in the old scope's directory, which made the
+          // "global" collection depend on personal directories and broke as
+          // soon as that personal directory was cleaned up.
+          let transferredCount = 0;
+          for (const img of imagesToTransfer) {
+            const fileName = safeFileName(img.file_path);
+            const newFilePath = `data/${newUserId}/${fileName}`;
+            if (newFilePath !== img.file_path) {
+              try {
+                // If another row still points at the same file, copy instead of
+                // moving so that row keeps working.
+                if (countImagesByFilePath(img.file_path) > 1) {
+                  await copyDataFile(img.file_path, newFilePath);
+                } else {
+                  await moveDataFile(img.file_path, newFilePath);
+                }
+              } catch (error) {
+                console.error(`[qmoji] Failed to move ${img.file_path}:`, error);
+                continue;
+              }
+            }
+            if (updateImageScope(img.id, newUserId, newFilePath)) {
+              transferredCount++;
+            }
+          }
           await send(context, {
             type: 'text',
             data: {
@@ -780,29 +893,43 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           });
           return;
         }
-        await send(
-          context,
-          images.length > 0
-            ? {
-                type: 'node',
-                data: {
-                  content: await getEmojiList(
-                    name,
-                    images,
-                    true,
-                    isAdmin && !isGroupChat,
-                    isGroupChat ? context.group_id : null,
-                    images.length,
-                    page,
-                    pageSize
-                  )
-                }
-              }
-            : {
-                type: 'text',
-                data: { text: `没有找到名称为“${name}”的表情。` }
-              }
-        );
+        if (images.length === 0) {
+          await send(context, {
+            type: 'text',
+            data: { text: `没有找到名称为“${name}”的表情。` }
+          });
+          return;
+        }
+        const pageImages = images.slice((page - 1) * pageSize, page * pageSize);
+        const totalUses = images.reduce((sum, img) => sum + img.use_count, 0);
+        const scopeLabel = images.every((i) => i.user_id === 'global')
+          ? '全局, '
+          : images.every((i) => i.user_id.startsWith('chat-'))
+            ? '群聊, '
+            : '';
+        await send(context, {
+          type: 'text',
+          data: {
+            text: `「${name}」(${scopeLabel}共 ${images.length} 个, 使用 ${totalUses} 次) (第 ${page} 页, 共 ${Math.ceil(images.length / pageSize)} 页)\n`
+          }
+        });
+        // Send the images in small chunks so that only a few of them are
+        // base64 encoded and held in memory at the same time.
+        for (let i = 0; i < pageImages.length; i += EMOJI_CHUNK_SIZE) {
+          const chunk = pageImages.slice(i, i + EMOJI_CHUNK_SIZE);
+          const segments = await getEmojiList(
+            name,
+            chunk,
+            true,
+            isAdmin && !isGroupChat,
+            isGroupChat ? context.group_id : null,
+            images.length,
+            false,
+            (page - 1) * pageSize + i
+          );
+          await send(context, ...segments);
+        }
+        return;
         return;
       }
       const save = async (userId: string) => {
@@ -830,23 +957,58 @@ napcat.on('message', async (context: AllHandlers['message']) => {
           const savedBy = context.user_id.toString();
           const savedFrom = isGroupChat ? context.group_id.toString() : null;
 
-          images.map(async (image) => {
-            const filePath = await downloadImage(image.url, userId, image.file);
-            insertImage(name, filePath, userId, savedBy, savedFrom);
-            console.log(
-              `[qmoji] User: ${userId}, Name: ${name}, Path: ${filePath}, SavedBy: ${savedBy}, SavedFrom: ${savedFrom || 'private'}`
-            );
-          });
+          // Wait for every download to finish before reporting the result.
+          //
+          // This used to be `images.map(async (image) => { ... })`, which was
+          // never awaited: a failed download escaped the try/catch below as an
+          // unhandled rejection (terminating the process on Node >= 15), and
+          // the success message was sent before a single byte had been
+          // written.
+          const results = await Promise.allSettled(
+            images.map(async (image) => {
+              const filePath = await downloadImage(image.url, userId, image.file);
+              try {
+                insertImage(name, filePath, userId, savedBy, savedFrom);
+              } catch (error) {
+                // Do not leave a file on disk that no row points at.
+                if (countImagesByFilePath(filePath) === 0) {
+                  deleteImage(filePath);
+                }
+                throw error;
+              }
+              console.log(
+                `[qmoji] User: ${userId}, Name: ${name}, Path: ${filePath}, SavedBy: ${savedBy}, SavedFrom: ${savedFrom || 'private'}`
+              );
+              return filePath;
+            })
+          );
+
+          const failed = results.filter((result) => result.status === 'rejected');
+          for (const failure of failed) {
+            console.error('[qmoji] Failed to save image:', failure.reason);
+          }
+          const saved = results.length - failed.length;
 
           if (isGroupChat) {
             await napcat.set_msg_emoji_like({
               message_id: context.message_id,
               emoji_id: '124'
             });
+            if (failed.length > 0) {
+              await send(context, {
+                type: 'text',
+                data: { text: `部分保存失败：成功 ${saved} 张，失败 ${failed.length} 张。` }
+              });
+            }
           } else {
             await send(context, {
               type: 'text',
-              data: { text: '保存成功！' }
+              data: {
+                text:
+                  failed.length === 0
+                    ? '保存成功！'
+                    : `部分保存失败：成功 ${saved} 张，失败 ${failed.length} 张。`
+              }
             });
           }
         } catch (error) {
@@ -901,7 +1063,7 @@ napcat.on('message', async (context: AllHandlers['message']) => {
   } catch (err) {
     console.error('[qmoji] Error handling message:', err);
   }
-});
+};
 
 // Do not `await napcat.connect()` here. `node-napcat-ts` only ever resolves that
 // promise from the socket's `open` handler and never rejects it, so when the socket
@@ -915,8 +1077,14 @@ napcat.connect().catch((error) => {
   console.error('[NapCat] Initial connection failed:', error);
 });
 
+// The emitter ignores whatever the listener returns, so the handler is
+// registered separately and explicitly marked as fire-and-forget.
+napcat.on('message', (context: AllHandlers['message']) => {
+  void handleMessage(context);
+});
+
 let shutdownInitiated = false;
-process.on('SIGINT', async () => {
+const shutdown = async () => {
   if (shutdownInitiated) {
     console.log('\nForce exiting...');
     process.exit(1);
@@ -934,4 +1102,8 @@ process.on('SIGINT', async () => {
 
   console.log('Process exited.');
   process.exit(0);
+};
+
+process.on('SIGINT', () => {
+  void shutdown();
 });
