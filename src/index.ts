@@ -129,6 +129,26 @@ const getGroupName = async (id: number) => {
 
 const getEmoji = async (image: ImageRecord, showName = false) => {
   try {
+    // With `imageFileBase` set, the implementation end reads the file itself
+    // from a path mounted into its own filesystem, so no image bytes ever
+    // enter this process's memory. Mirror resolveDataPath's sanitising so a
+    // strange database row still maps inside the mounted data directory.
+    if (config.imageFileBase) {
+      const segments = image.file_path
+        .split(/[/\\]/)
+        .filter((segment) => segment && segment !== '.' && segment !== '..');
+      if (segments[0] === 'data') {
+        segments.shift();
+      }
+      return {
+        type: 'image',
+        data: {
+          summary: `[${showName ? image.name : '动画表情'}]`,
+          sub_type: 1 as unknown as string,
+          file: `file://${config.imageFileBase}/${segments.join('/')}`
+        }
+      } satisfies ImageSegment;
+    }
     const fullPath = resolveDataPath(image.file_path);
     // Encode straight into the string so the raw Buffer is not kept alive by a
     // local binding for the rest of the function.
@@ -150,7 +170,15 @@ const getEmoji = async (image: ImageRecord, showName = false) => {
   }
 };
 
-const getEmojiList = async (
+/**
+ * Render emoji entries as GROUPS of segments: group 0 is the page header
+ * (only when `showHeader`), and every group after it is one emoji entry.
+ *
+ * The message shape is up to the caller: `.flat()` for one plain message, or
+ * one forward node per group — a single forward entry must stay small, since
+ * clients truncate a huge entry to its first few elements.
+ */
+const getEmojiGroups = async (
   name: string,
   images: ImageRecord[],
   showIndex = false,
@@ -159,58 +187,58 @@ const getEmojiList = async (
   totalCount?: number,
   showHeader = true,
   indexOffset = 0
-): Promise<SendMessageSegment[]> => {
+): Promise<SendMessageSegment[][]> => {
   const totalUses = images.reduce((sum, img) => sum + img.use_count, 0);
   let saveInfo = '';
   // `images` is exactly the set to render — the caller slices, so the same
   // image is never encoded twice and the caller stays in control of paging.
-  const segments = (
-    await mapWithConcurrency(images, EMOJI_CONCURRENCY, async (img, i) => {
-      const imgSegment = await getEmoji(img);
-      const ownershipLabel =
-        img.user_id === 'global' ? ' (全局)' : img.user_id.startsWith('chat-') ? ' (群聊)' : '';
-      const useCountInfo = ` (${img.use_count} 次)`;
-      const savedById = parseInt(img.saved_by);
-      const savedFromId = img.saved_from ? parseInt(img.saved_from) : null;
-      const savedByInfo =
-        (savedFromId === groupId || showSensitiveSaveInfo) && !isNaN(savedById)
-          ? ` - 由 ${await getUserName(savedById)} 保存`
-          : '';
-      const savedFromInfo =
-        savedFromId !== groupId && showSensitiveSaveInfo && savedFromId
-          ? `于群 ${await getGroupName(savedFromId)}`
-          : '';
-      if (i === 0) saveInfo = `${savedByInfo}${savedFromInfo}`;
+  const itemGroups = await mapWithConcurrency(images, EMOJI_CONCURRENCY, async (img, i) => {
+    const imgSegment = await getEmoji(img);
+    const ownershipLabel =
+      img.user_id === 'global' ? ' (全局)' : img.user_id.startsWith('chat-') ? ' (群聊)' : '';
+    const useCountInfo = ` (${img.use_count} 次)`;
+    const savedById = parseInt(img.saved_by);
+    const savedFromId = img.saved_from ? parseInt(img.saved_from) : null;
+    const savedByInfo =
+      (savedFromId === groupId || showSensitiveSaveInfo) && !isNaN(savedById)
+        ? ` - 由 ${await getUserName(savedById)} 保存`
+        : '';
+    const savedFromInfo =
+      savedFromId !== groupId && showSensitiveSaveInfo && savedFromId
+        ? `于群 ${await getGroupName(savedFromId)}`
+        : '';
+    if (i === 0) saveInfo = `${savedByInfo}${savedFromInfo}`;
 
-      return showIndex
-        ? [
-            {
-              type: 'text',
-              data: {
-                text: `${indexOffset + i + 1}.${ownershipLabel}${useCountInfo}${savedByInfo}${savedFromInfo}\n`
-              }
-            } satisfies TextSegment,
-            imgSegment
-          ]
-        : [imgSegment];
-    })
-  ).flat();
-
-  return [
-    ...(showHeader
+    return showIndex
       ? [
           {
             type: 'text',
             data: {
-              text:
-                `「${name}」(${images.every((i) => i.user_id === 'global') ? '全局, ' : images.every((i) => i.user_id.startsWith('chat-')) ? '群聊, ' : ''}共 ${totalCount ?? images.length} 个, 使用 ${totalUses} 次)` +
-                (saveInfo ? `\n${saveInfo}` : '') +
-                `\n`
+              text: `${indexOffset + i + 1}.${ownershipLabel}${useCountInfo}${savedByInfo}${savedFromInfo}\n`
             }
-          } satisfies TextSegment
+          } satisfies TextSegment,
+          imgSegment
+        ]
+      : [imgSegment];
+  });
+
+  return [
+    ...(showHeader
+      ? [
+          [
+            {
+              type: 'text',
+              data: {
+                text:
+                  `「${name}」(${images.every((i) => i.user_id === 'global') ? '全局, ' : images.every((i) => i.user_id.startsWith('chat-')) ? '群聊, ' : ''}共 ${totalCount ?? images.length} 个, 使用 ${totalUses} 次)` +
+                  (saveInfo ? `\n${saveInfo}` : '') +
+                  `\n`
+              }
+            } satisfies TextSegment
+          ]
         ]
       : []),
-    ...segments
+    ...itemGroups
   ];
 };
 
@@ -679,20 +707,11 @@ const handleMessage = async (context: AllHandlers['message']) => {
             return;
           }
           const pageEntries = groupEntries.slice((page - 1) * listPageSize, page * listPageSize);
-          await send(context, {
-            type: 'text',
-            data: {
-              text: `已保存的表情列表 (${groupEntries.length}) (第 ${page} 页，共 ${Math.ceil(groupEntries.length / listPageSize)} 页)\n`
-            }
-          });
-          // Send the images in small chunks. Encoding a whole page at once used
-          // to peak far above the service's memory limit and got the process
-          // OOM killed.
-          for (let i = 0; i < pageEntries.length; i += EMOJI_CHUNK_SIZE) {
-            const chunk = pageEntries.slice(i, i + EMOJI_CHUNK_SIZE);
-            const chunkSegments = (
-              await mapWithConcurrency(chunk, EMOJI_CONCURRENCY, async (group) =>
-                getEmojiList(
+          const headerText = `已保存的表情列表 (${groupEntries.length}) (第 ${page} 页，共 ${Math.ceil(groupEntries.length / listPageSize)} 页)\n`;
+          const renderGroups = async (entries: typeof pageEntries) =>
+            (
+              await mapWithConcurrency(entries, EMOJI_CONCURRENCY, async (group) =>
+                getEmojiGroups(
                   group.name,
                   [random(group.images)],
                   false,
@@ -702,7 +721,43 @@ const handleMessage = async (context: AllHandlers['message']) => {
                 )
               )
             ).flat();
-            await send(context, { type: 'node', data: { content: chunkSegments } });
+          if (config.imageFileBase) {
+            // file:// mode: ONE merged forward for the whole page, a small
+            // entry per emoji group (one giant entry would be truncated).
+            const groups = await renderGroups(pageEntries);
+            const message: SendMessageSegment[] = [
+              {
+                type: 'node',
+                data: {
+                  content: [{ type: 'text', data: { text: headerText } } satisfies TextSegment]
+                }
+              },
+              ...groups.map(
+                (group): SendMessageSegment => ({ type: 'node', data: { content: group } })
+              )
+            ];
+            await send(context, ...message);
+            return;
+          }
+          // base64 mode: encode a few entries at a time — a whole page at once
+          // used to peak far above the service's memory limit and got the
+          // process OOM killed. Each chunk is one merged forward, with the
+          // header riding in the first chunk.
+          for (let i = 0; i < pageEntries.length; i += EMOJI_CHUNK_SIZE) {
+            const chunk = pageEntries.slice(i, i + EMOJI_CHUNK_SIZE);
+            const chunkGroups = await renderGroups(chunk);
+            await send(context, {
+              type: 'node',
+              data: {
+                content:
+                  i === 0
+                    ? [
+                        { type: 'text', data: { text: headerText } } satisfies TextSegment,
+                        ...chunkGroups.flat()
+                      ]
+                    : chunkGroups.flat()
+              }
+            });
           }
         }
         const clear = async (userId: string) => {
@@ -907,17 +962,42 @@ const handleMessage = async (context: AllHandlers['message']) => {
           : images.every((i) => i.user_id.startsWith('chat-'))
             ? '群聊, '
             : '';
-        await send(context, {
-          type: 'text',
-          data: {
-            text: `「${name}」(${scopeLabel}共 ${images.length} 个, 使用 ${totalUses} 次) (第 ${page} 页, 共 ${Math.ceil(images.length / pageSize)} 页)\n`
-          }
-        });
-        // Send the images in small chunks so that only a few of them are
-        // base64 encoded and held in memory at the same time.
+        const headerText = `「${name}」(${scopeLabel}共 ${images.length} 个, 使用 ${totalUses} 次) (第 ${page} 页, 共 ${Math.ceil(images.length / pageSize)} 页)\n`;
+        if (config.imageFileBase) {
+          // file:// mode: segments are just path strings, so the whole page
+          // leaves as ONE merged forward with a small entry per emoji. One
+          // giant entry is not an option — clients truncate it after a few
+          // items — hence one node (forward entry) per group.
+          const groups = await getEmojiGroups(
+            name,
+            pageImages,
+            true,
+            isAdmin && !isGroupChat,
+            isGroupChat ? context.group_id : null,
+            images.length,
+            false,
+            (page - 1) * pageSize
+          );
+          const message: SendMessageSegment[] = [
+            {
+              type: 'node',
+              data: {
+                content: [{ type: 'text', data: { text: headerText } } satisfies TextSegment]
+              }
+            },
+            ...groups.map(
+              (group): SendMessageSegment => ({ type: 'node', data: { content: group } })
+            )
+          ];
+          await send(context, ...message);
+          return;
+        }
+        // base64 mode: encode only a few images at a time — encoding a whole
+        // page at once used to peak far above the service's memory limit — so
+        // the page leaves as several merged forwards.
         for (let i = 0; i < pageImages.length; i += EMOJI_CHUNK_SIZE) {
           const chunk = pageImages.slice(i, i + EMOJI_CHUNK_SIZE);
-          const segments = await getEmojiList(
+          const groups = await getEmojiGroups(
             name,
             chunk,
             true,
@@ -927,9 +1007,19 @@ const handleMessage = async (context: AllHandlers['message']) => {
             false,
             (page - 1) * pageSize + i
           );
-          await send(context, ...segments);
+          await send(context, {
+            type: 'node',
+            data: {
+              content:
+                i === 0
+                  ? [
+                      { type: 'text', data: { text: headerText } } satisfies TextSegment,
+                      ...groups.flat()
+                    ]
+                  : groups.flat()
+            }
+          });
         }
-        return;
         return;
       }
       const save = async (userId: string) => {

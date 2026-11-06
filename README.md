@@ -8,6 +8,7 @@
 {
   "napcatWs": "ws://127.0.0.1:3001",
   "napcatToken": "token",
+  "imageFileBase": "", // 非空时图片以 file://<imageFileBase>/<相对路径> 发送（要求实现端把 qmoji 的 data 目录挂载到该路径）；留空则发送 base64
   "admins": [123456789],
   "prefixes": {
     "save": ["#"], // 须为单字符
